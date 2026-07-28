@@ -1593,19 +1593,23 @@ export default function Home() {
               )}
             </div>
 
-            <input
-              type="password"
-              value={apiKey}
-              onChange={handleGeminiKeyChange}
-              placeholder="Paste your Gemini API key (from aistudio.google.com)"
-              className={`w-full bg-slate-900 border rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:outline-none font-mono ${
-                autoDetectStatus.startsWith('Error')
-                  ? 'border-red-500/60 focus:ring-red-500'
-                  : keyIsValid
-                  ? 'border-emerald-500/60 focus:ring-emerald-500'
-                  : 'border-purple-800/60 focus:ring-purple-500'
-              }`}
-            />
+            <form onSubmit={(e) => e.preventDefault()}>
+              <input type="text" name="username" autoComplete="username" className="hidden" tabIndex={-1} />
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={apiKey}
+                onChange={handleGeminiKeyChange}
+                placeholder="Paste your Gemini API key (from aistudio.google.com)"
+                className={`w-full bg-slate-900 border rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:outline-none font-mono ${
+                  autoDetectStatus.startsWith('Error')
+                    ? 'border-red-500/60 focus:ring-red-500'
+                    : keyIsValid
+                    ? 'border-emerald-500/60 focus:ring-emerald-500'
+                    : 'border-purple-800/60 focus:ring-purple-500'
+                }`}
+              />
+            </form>
 
             <p className="text-xs text-purple-300/80 leading-relaxed">
               Required — free, takes ~2 minutes at{' '}
@@ -1638,13 +1642,17 @@ export default function Home() {
                 </span>
               )}
             </div>
-            <input
-              type="password"
-              value={groqApiKey}
-              onChange={handleGroqKeyChange}
-              placeholder="Paste your Groq API key"
-              className="w-full bg-slate-900 border border-amber-900/60 rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-amber-500 focus:outline-none font-mono"
-            />
+            <form onSubmit={(e) => e.preventDefault()}>
+              <input type="text" name="username" autoComplete="username" className="hidden" tabIndex={-1} />
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={groqApiKey}
+                onChange={handleGroqKeyChange}
+                placeholder="Paste your Groq API key"
+                className="w-full bg-slate-900 border border-amber-900/60 rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-amber-500 focus:outline-none font-mono"
+              />
+            </form>
             <p className="text-xs text-amber-300/80 leading-relaxed">
               Not required, but without it, generation falls back to Gemini alone — if Gemini is busy, you'll wait longer or hit an error. Adding a free key from{' '}
               <a
@@ -1676,13 +1684,16 @@ export default function Home() {
                 </span>
               )}
             </div>
-            <input
-              type="password"
-              value={openRouterApiKey}
-              onChange={handleOpenRouterKeyChange}
-              placeholder="sk-or-... (Used only if Gemini and Groq both fail)"
-              className="w-full bg-slate-900 border border-indigo-800/60 rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:outline-none font-mono"
-            />
+            <form onSubmit={(e) => e.preventDefault()}>
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={openRouterApiKey}
+                onChange={handleOpenRouterKeyChange}
+                placeholder="sk-or-... (Used only if Gemini and Groq both fail)"
+                className="w-full bg-slate-900 border border-indigo-800/60 rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:outline-none font-mono"
+              />
+            </form>
             <p className="text-xs text-indigo-300/80 leading-relaxed">
               Last-resort fallback. Get a free key at{' '}
               <a

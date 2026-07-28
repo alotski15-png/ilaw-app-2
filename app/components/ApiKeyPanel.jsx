@@ -75,7 +75,7 @@ export default function ApiKeyPanel({
           </label>
         </div>
 
-        <div className="relative">
+        <form onSubmit={(e) => e.preventDefault()}>
           <input
             type="password"
             value={apiKey}
@@ -83,7 +83,7 @@ export default function ApiKeyPanel({
             placeholder="Paste your Gemini API key (from aistudio.google.com)"
             className="w-full bg-slate-900 border rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:outline-none font-mono"
           />
-        </div>
+        </form>
 
         <p className="text-xs text-purple-300/80 leading-relaxed">
           Required — free, takes ~2 minutes at{' '}
@@ -100,7 +100,7 @@ export default function ApiKeyPanel({
             <span>⚡</span> Groq API Key <span className="text-amber-500 font-normal">(strongly recommended)</span>
           </label>
         </div>
-        <div className="relative">
+        <form onSubmit={(e) => e.preventDefault()}>
           <input
             type="password"
             value={groqApiKey}
@@ -108,7 +108,7 @@ export default function ApiKeyPanel({
             placeholder="Paste your Groq API key"
             className="w-full bg-slate-900 border border-amber-900/60 rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-amber-500 focus:outline-none font-mono"
           />
-        </div>
+        </form>
         <p className="text-xs text-amber-300/80 leading-relaxed">
           Not required, but without it, generation falls back to Gemini alone — if Gemini is busy, you'll wait longer or hit an error.
         </p>
@@ -120,7 +120,7 @@ export default function ApiKeyPanel({
             <span>🔑</span> OpenRouter API Key <span className="text-indigo-400 font-normal">(Optional — final fallback)</span>
           </label>
         </div>
-        <div className="relative">
+        <form onSubmit={(e) => e.preventDefault()}>
           <input
             type="password"
             value={openRouterApiKey}
@@ -128,7 +128,7 @@ export default function ApiKeyPanel({
             placeholder="sk-or-... (Used only if Gemini and Groq both fail)"
             className="w-full bg-slate-900 border border-indigo-800/60 rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:outline-none font-mono"
           />
-        </div>
+        </form>
         <p className="text-xs text-indigo-300/80 leading-relaxed">
           Last-resort fallback. Get a free key at{' '}
           <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="font-bold underline text-indigo-300 hover:text-indigo-100">
