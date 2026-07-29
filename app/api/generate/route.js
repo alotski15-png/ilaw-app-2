@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { buildLessonPlanPipeline, runLessonPlanPipeline } from '@/lib/ai-providers';
-import { getEphemeralKeys } from '@/lib/ephemeral-keys';
+
 import { z } from 'zod';
 
 // Zod schema for validating AI-generated lesson plans
@@ -41,21 +41,15 @@ export const runtime = 'nodejs';
 export async function POST(req) {
   try {
     const body = await req.json();
-    let { geminiApiKey, groqApiKey, openRouterApiKey, selectedModel, ...formData } = body;
+    const { selectedModel, ...formData } = body;
+    // Check headers first, then fall back to JSON body fields
+    const geminiApiKey = req.headers.get('x-gemini-api-key') || body.geminiApiKey || '';
+    const cerebrasApiKey = req.headers.get('x-cerebras-api-key') || body.cerebrasApiKey || '';
+    const openAiApiKey = req.headers.get('x-openai-api-key') || body.openAiApiKey || '';
+    const deepSeekApiKey = req.headers.get('x-deepseek-api-key') || body.deepSeekApiKey || '';
 
-    // support ephemeral tokens created by /api/session-keys
-    if (typeof geminiApiKey === 'string' && geminiApiKey.startsWith('epk_')) {
-      const keys = await getEphemeralKeys(geminiApiKey);
-      if (keys) {
-        geminiApiKey = keys.geminiApiKey || '';
-        groqApiKey = keys.groqApiKey || '';
-        openRouterApiKey = keys.openRouterApiKey || '';
-      } else {
-        return NextResponse.json({ error: 'Ephemeral token expired or invalid.' }, { status: 400 });
-      }
-    }
 
-    if (!geminiApiKey && !groqApiKey && !openRouterApiKey) {
+    if (!geminiApiKey && !cerebrasApiKey && !openAiApiKey && !deepSeekApiKey) {
       return NextResponse.json(
         { error: 'No valid API keys were provided.' },
         { status: 400 }
@@ -184,6 +178,38 @@ SESSIONS MATRIX (${targetSessions} columns):
     Write 2-3 paragraphs of substantive reflection notes on: anticipated pedagogical effectiveness, learner engagement strategies used, possible challenges anticipated, and planned adjustments for future sessions.
 
 ████████████████████████████████████████████████████████████
+PEDAGOGICAL REQUIREMENTS
+████████████████████████████████████████████████████████████
+
+Integrate the following pedagogical principles THROUGHOUT the entire lesson plan, especially in the 'flow', 'formativeAssessment', and 'learningObjectives' sections:
+
+1.  **Higher-Order Thinking Skills (HOTS):**
+    - Move beyond simple recall. All questions, activities, and assessments must target HOTS.
+    - Focus on Analyzing (e.g., comparing/contrasting, deconstructing), Evaluating (e.g., critiquing, justifying decisions), and Creating (e.g., designing, producing new work).
+    - In the 'flow' section, label higher-order questions clearly (e.g., "Teacher asks (Analysis): 'How does this character's motivation compare to...?'").
+    - Add **(Indicator 1.5.2)** after each HOTS question or creative thinking activity.
+
+2.  **21st-Century Skills:**
+    - Explicitly embed the "4Cs" (Critical Thinking, Creativity, Communication, Collaboration) into the activities.
+    - In the 'flow' section, briefly note which of the 4Cs is being targeted by a specific activity (e.g., "Learners Do (Collaboration & Communication): Students discuss their findings in groups...").
+
+3.  **DepEd Core Values:**
+    - Deliberately integrate the DepEd Core Values: Maka-Diyos, Maka-tao, Makakalikasan, and Makabansa.
+    - The "Attitudes" learning objective for each session MUST explicitly name one of these core values.
+    - The 'flow' and 'reflections' sections should connect activities and outcomes back to these values where appropriate. For example, a science lesson on ecosystems should connect to 'Makakalikasan'.
+
+4.  **Literacy and Numeracy Integration:**
+    - Include at least one reading/writing/vocabulary activity per session. Add **(Indicator 1.4.2)** after it.
+    - Include at least one numerical/data/mathematical reasoning activity per session. Add **(Indicator 1.4.2)** after it.
+
+5.  **Differentiated Instruction:**
+    - Include at least one differentiated activity per session (visual, auditory, kinesthetic options OR tiered tasks by readiness level). Add **(Indicator 3.1.2)** after it.
+
+6.  **Classroom Management:**
+    - Include positive discipline strategies and behavior management in preLesson and flow. Add **(Indicator 2.6.2)** after it.
+    - Describe classroom structure and group arrangements for hands-on activities. Add **(Indicator 2.3.2)** after it.
+
+████████████████████████████████████████████████████████████
 PEDAGOGICAL PROGRESSION ACROSS SESSIONS
 ████████████████████████████████████████████████████████████
 
@@ -209,7 +235,7 @@ STRICT OUTPUT RULES
 3. EVERY field in EVERY session must contain substantive, specific content. No placeholders, no "TBD", no empty strings, no "..." ellipsis marks.
 4. The "flow" field must be the MOST DETAILED field - it is the instructional script that teachers will follow step-by-step.
 5. The "formativeAssessment" field must be a JSON object with method, evidence, sampleItems, and evidenceOfSuccess.
-6. All content must be clean and professional - do not include bracketed tags like "[COT 1]", "[COT Indicator X]", or any reference to classroom observation tools.
+6. All content MUST include COT indicator annotations in BOLD using the format **(Indicator X.X.X)** as specified in the COT INDICATOR ALIGNMENT section above. These are REQUIRED and must appear throughout the lesson plan content.
 7. Match the language specified: ${formData.language || 'English (Default)'}.
 
 ████████████████████████████████████████████████████████████
@@ -254,21 +280,117 @@ REQUIRED JSON STRUCTURE
 }
 `;
 
-    const prompt = `${systemInstruction}\nUser Input Data: ${JSON.stringify(formData)}`;
+    // Conditionally include COT indicator instructions based on user preference
+    const cotInstruction = body.includeCotIndicators !== false ? `
+████████████████████████████████████████████████████████████
+COT INDICATOR ALIGNMENT (MANDATORY — HIGH YIELD RATING)
+████████████████████████████████████████████████████████████
+
+The generated lesson plan MUST explicitly address ALL 9 COT indicators below to achieve a HIGH RATING (6 out of 6). After each relevant section of the lesson plan, insert the indicator annotation in BOLD using this exact format: **(Indicator X.X.X)**
+
+The 9 COT Indicators (SY 2026-2027) are:
+
+1. **(Indicator 1.1.2)** — Apply knowledge of content within and across curriculum teaching areas
+   - Show cross-curricular connections in learningObjectives and opportunitiesForIntegration
+   - Demonstrate deep subject content knowledge in the flow section
+
+2. **(Indicator 1.4.2)** — Use a range of teaching strategies that enhance learner achievement in literacy and numeracy skills
+   - Include reading, writing, vocabulary building activities
+   - Include numerical reasoning, data analysis, or mathematical connections
+
+3. **(Indicator 1.5.2)** — Apply a range of teaching strategies to develop critical and creative thinking, as well as other higher-order thinking skills
+   - Include HOTS questions (Analysis, Evaluation, Creation)
+   - Include creative thinking tasks (designing, producing, generating)
+
+4. **(Indicator 2.3.2)** — Manage classroom structure to engage learners in meaningful exploration, discovery and hands-on activities
+   - Describe group arrangements, physical setup, hands-on manipulatives
+   - Include discovery-based learning activities
+
+5. **(Indicator 2.6.2)** — Manage learner behavior constructively by applying positive and non-violent discipline
+   - Include classroom norms, positive reinforcement, behavior management strategies
+   - Describe how the teacher maintains a learning-focused environment
+
+6. **(Indicator 3.1.2)** — Use differentiated, developmentally appropriate learning experiences to address learners' gender, needs, strengths, interests and experiences
+   - Include differentiated activities for different readiness levels
+   - Address varied learning styles (visual, auditory, kinesthetic)
+   - Include gender-responsive and inclusive strategies
+
+7. **(Indicator 4.1.2)** — Plan, manage and implement developmentally sequenced teaching and learning process
+   - Show clear lesson sequencing (Pre-Lesson → Flow phases → Assessment)
+   - Include time allocations and smooth transitions
+
+8. **(Indicator 4.5.2)** — Select, develop, organize and use appropriate teaching and learning resources, including ICT
+   - List specific, concrete learning resources including technology
+   - Include alternative/fallback resources
+
+9. **(Indicator 5.1.2)** — Design, select, organize and use diagnostic, formative and summative assessment strategies
+   - Include diagnostic checks in preLesson
+   - Include formative assessment with specific items and rubrics
+   - Include evidence of success criteria
+
+WHERE TO PLACE INDICATOR ANNOTATIONS:
+- In "learningObjectives": Add **(Indicator 1.1.2)** after cross-curricular knowledge objectives
+- In "preLesson": Add **(Indicator 2.6.2)** after behavior management/routines, **(Indicator 5.1.2)** after diagnostic checks
+- In "flow": Add **(Indicator 1.4.2)** after literacy/numeracy strategies, **(Indicator 1.5.2)** after HOTS questions, **(Indicator 2.3.2)** after hands-on/group activities, **(Indicator 3.1.2)** after differentiated instruction, **(Indicator 4.1.2)** after sequencing/time allocation
+- In "learningResources": Add **(Indicator 4.5.2)** after listing resources
+- In "formativeAssessment": Add **(Indicator 5.1.2)** after assessment description
+- In "opportunitiesForIntegration": Add **(Indicator 1.1.2)** after cross-curricular connections
+
+CRITICAL: Each indicator must appear at least once across the sessions. The annotations must be in BOLD text using double asterisks: **(Indicator X.X.X)**
+` : '';
+
+    const prompt = `${systemInstruction}${cotInstruction}\nUser Input Data: ${JSON.stringify(formData)}`;
+
+    // Use the request's abort signal directly - this is automatically aborted
+    // when the client calls abort() on the AbortController in page.js
+    const signal = req.signal;
 
     const pipeline = buildLessonPlanPipeline({
       geminiApiKey,
-      groqApiKey,
-      openRouterApiKey,
+      cerebrasApiKey,
+      openAiApiKey,
+      deepSeekApiKey,
       selectedModel,
       prompt,
       timeout: 25000,
       maxOutputTokens: 16384,
+      signal,
     });
 
+    // All 9 COT indicators that must appear at least once in the lesson plan
+    const REQUIRED_COT_INDICATORS = [
+      '(Indicator 1.1.2)',
+      '(Indicator 1.4.2)',
+      '(Indicator 1.5.2)',
+      '(Indicator 2.3.2)',
+      '(Indicator 2.6.2)',
+      '(Indicator 3.1.2)',
+      '(Indicator 4.1.2)',
+      '(Indicator 4.5.2)',
+      '(Indicator 5.1.2)',
+    ];
+
+    // Validation: check session count AND that all 9 COT indicators are present (only if enabled)
+    const isValid = (parsed) => {
+      if (!parsed || !Array.isArray(parsed.sessions) || parsed.sessions.length !== targetSessions) {
+        return false;
+      }
+      // Only validate COT indicators if the user enabled them
+      if (body.includeCotIndicators !== false) {
+        const fullText = JSON.stringify(parsed);
+        const missing = REQUIRED_COT_INDICATORS.filter(ind => !fullText.includes(ind));
+        if (missing.length > 0) {
+          console.warn(`[Validation] Missing COT indicators: ${missing.join(', ')}`);
+          return false;
+        }
+      }
+      return true;
+    };
+
     const result = await runLessonPlanPipeline(pipeline, {
-      isValid: (parsed) => parsed?.sessions?.length === targetSessions,
+      isValid,
       maxRetries: 10,
+      signal,
     });
 
     if (!result) {
@@ -304,7 +426,6 @@ REQUIRED JSON STRUCTURE
     const parsed = PlanSchema.safeParse(planCandidate);
     if (!parsed.success) {
       console.error('Validation failed for AI response:', parsed.error.format());
-      // increment Redis-backed metrics for monitoring
 
       return NextResponse.json(
         {

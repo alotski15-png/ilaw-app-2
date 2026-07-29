@@ -18,25 +18,9 @@ import {
   UploadCloud,
   Lightbulb
 } from 'lucide-react';
-import { 
-  Document, 
-  Packer, 
-  Paragraph, 
-  TextRun, 
-  Table, 
-  TableRow, 
-  TableCell, 
-  WidthType, 
-  AlignmentType, 
-  HeadingLevel,
-  ShadingType,
-  PageOrientation,
-  BorderStyle,
-  VerticalAlign,
-  HeightRule
-} from 'docx';
-import { saveAs } from 'file-saver';
+
 import ApiKeyInstructionsModal from './components/ApiKeyInstructionsModal';
+import ApiKeyPanel from './components/ApiKeyPanel'; // Import the ApiKeyPanel component
 import {
   buildHeaderTable,
   buildSessionTable,
@@ -111,24 +95,7 @@ const IlawLogo = ({ className = "w-10 h-10" }) => (
   </div>
 );
 
-// Updated & Sorted: Latest to Oldest (Obsolete models removed)
-const DEFAULT_GEMINI_MODELS = [
-  { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash (gemini-3.6-flash)' },
-  { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash (gemini-3.5-flash)' },
-  { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash-Lite (gemini-3.5-flash-lite)' },
-  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro (gemini-3.1-pro-preview)' },
-  { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash-Lite (gemini-3.1-flash-lite)' },
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (gemini-2.5-pro)' },
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (gemini-2.5-flash)' },
-];
 
-function debounce(fn, delay) {
-  let timer;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), delay);
-  };
-}
 
 const parseNameAndDesignation = (rawInput, defaultName, defaultDesignation) => {
   const input = rawInput || defaultName || '';
@@ -157,9 +124,11 @@ const renderBoldText = (text) => {
   const parts = text.split(/(\*\*.*?\*\*)/g);
   return parts.map((part, pIdx) => {
     if (part.startsWith('**') && part.endsWith('**')) {
+      const innerText = part.slice(2, -2);
+      const isIndicator = innerText.startsWith('(Indicator');
       return (
-        <strong key={pIdx} className="font-bold text-slate-900">
-          {part.slice(2, -2)}
+        <strong key={pIdx} className={isIndicator ? "font-bold text-red-600" : "font-bold text-slate-900"}>
+          {innerText}
         </strong>
       );
     }
@@ -288,26 +257,18 @@ const toRoman = (num) => {
 
 export default function Home() {
   const [instructionModalProvider, setInstructionModalProvider] = useState(null);
-  const [apiKey, setApiKey] = useState('');
-  const [groqApiKey, setGroqApiKey] = useState('');
-  const [openRouterApiKey, setOpenRouterApiKey] = useState('');
+  // States for API keys and selected model, now managed by ApiKeyPanel
+  const [currentApiKey, setCurrentApiKey] = useState('');
+  const [currentCerebrasApiKey, setCurrentCerebrasApiKey] = useState('');
+  const [currentOpenAiApiKey, setCurrentOpenAiApiKey] = useState('');
+  const [currentDeepSeekApiKey, setCurrentDeepSeekApiKey] = useState('');
+  const [currentSelectedModel, setCurrentSelectedModel] = useState('gemini-2.5-pro');
 
-  // Default to gemini-3.6-flash
-  const [selectedModel, setSelectedModel] = useState('gemini-3.6-flash');
-  const [availableModels, setAvailableModels] = useState(DEFAULT_GEMINI_MODELS);
-  const [autoDetectStatus, setAutoDetectStatus] = useState('');
-  const [isDetecting, setIsDetecting] = useState(false);
-  const [keyIsValid, setKeyIsValid] = useState(false);
-
-  const [groqKeyIsValid, setGroqKeyIsValid] = useState(false);
-  const [isDetectingGroq, setIsDetectingGroq] = useState(false);
-
-  const [availableTerms, setAvailableTerms] = useState(['Term 1', 'Term 2', 'Term 3']); // Default options
-  const [availableWeeks, setAvailableWeeks] = useState(Array.from({ length: 11 }, (_, i) => `Week ${i + 1}`)); // Default options
+  // New state variables for metadata extraction
   const [isExtractingMetadata, setIsExtractingMetadata] = useState(false);
   const [metadataExtractionError, setMetadataExtractionError] = useState('');
-  const [openRouterKeyIsValid, setOpenRouterKeyIsValid] = useState(false);
-  const [isDetectingOpenRouter, setIsDetectingOpenRouter] = useState(false);
+  const [availableTerms, setAvailableTerms] = useState(['Term 1', 'Term 2', 'Term 3']);
+  const [availableWeeks, setAvailableWeeks] = useState(Array.from({ length: 11 }, (_, i) => `Week ${i + 1}`));
 
 
   const [bowFile, setBowFile] = useState(null);
@@ -319,6 +280,7 @@ export default function Home() {
   const [customResourceText, setCustomResourceText] = useState('');
   const [customReferenceText, setCustomReferenceText] = useState('');
   const [customLearnerContextText, setCustomLearnerContextText] = useState('');
+  const [includeCotIndicators, setIncludeCotIndicators] = useState(false);
 
   // Disclaimer Modal State
   const [showDisclaimerModal, setShowDisclaimerModal] = useState(true);
@@ -327,6 +289,12 @@ export default function Home() {
   // Support Modal State
   const [isSupportModalOpen, setIsSupportModalOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  // BOW Upload Support Gate State
+  const [showBowSupportGate, setShowBowSupportGate] = useState(false);
+  const [bowSupportCountdown, setBowSupportCountdown] = useState(5);
+  const [pendingBowFile, setPendingBowFile] = useState(null);
+  const bowSupportTimerRef = useRef(null);
 
   const [formData, setFormData] = useState({
     lessonName: '',
@@ -351,13 +319,70 @@ export default function Home() {
   });
 
   const [loading, setLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState('');
   const [downloadingDocx, setDownloadingDocx] = useState(false);
   const [downloadingSeparatedDocx, setDownloadingSeparatedDocx] = useState(false);
   const [lessonPlan, setLessonPlan] = useState(null);
   const [snapshotData, setSnapshotData] = useState(null);
 
+  // Support timer state
+  const [showSupportTimer, setShowSupportTimer] = useState(false);
+  const [supportCountdown, setSupportCountdown] = useState(5);
+  const supportTimerRef = useRef(null);
+
   // Ref for AbortController for main generation
   const abortControllerRef = useRef(null);
+  const loadingIntervalRef = useRef(null);
+
+  const loadingMessages = [
+    'Polishing the lesson objectives... ✨',
+    'Bribing the AI with virtual coffee... ☕',
+    'Convincing the lesson to write itself... 📝',
+    'Untangling the learning competencies... 🧶',
+    'Chasing runaway learning objectives... 🏃‍♂️',
+    'Consulting the imaginary Master Teacher... 🧑‍🏫',
+    'Aligning planets with COT indicators... 🌍',
+    'Fighting the urge to add more bullet points... 🔫',
+    'Making sure DepEd would be proud... 🎓',
+    'Herding cats into cooperative groups... 🐱',
+    'Decoding the secret language of curriculum guides... 🔍',
+    'Convincing students that math is fun... 🤡',
+    'Searching for that one missing semicolon... 🔎',
+    'Putting the \'pro\' in \'professional development\'... 💪',
+    'Building a food chain out of pure imagination... 🍔',
+    'Asking the lesson plan what it wants to be when it grows up... 🌱',
+    'Calculating the probability of a perfect rating... 📊',
+    'Rehearsing the \'any questions?\' face... 😐',
+    'Formatting margins so they spark joy... 🎯',
+    'Making sure the printer will cooperate tomorrow... 🖨️',
+  ];
+
+  // Start/stop rotating loading messages when loading state changes
+  useEffect(() => {
+    if (loading) {
+      setLoadingMessage(loadingMessages[Math.floor(Math.random() * loadingMessages.length)]);
+      loadingIntervalRef.current = setInterval(() => {
+        setLoadingMessage(prev => {
+          let next;
+          do {
+            next = loadingMessages[Math.floor(Math.random() * loadingMessages.length)];
+          } while (next === prev && loadingMessages.length > 1);
+          return next;
+        });
+      }, 2500);
+    } else {
+      if (loadingIntervalRef.current) {
+        clearInterval(loadingIntervalRef.current);
+        loadingIntervalRef.current = null;
+      }
+      setLoadingMessage('');
+    }
+    return () => {
+      if (loadingIntervalRef.current) {
+        clearInterval(loadingIntervalRef.current);
+      }
+    };
+  }, [loading]);
 
   // Ref for auto-scrolling to lesson plan header
   const headerRef = useRef(null);
@@ -369,87 +394,112 @@ export default function Home() {
   }, [lessonPlan]);
 
   const handleCopyGCash = () => {
-    navigator.clipboard.writeText('09912043738');
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (typeof window !== 'undefined') {
+      navigator.clipboard.writeText('09912043738');
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
-  const handleAutoDetectModels = async (keyToTest) => {
-    const targetKey = keyToTest || apiKey;
-    if (!targetKey || targetKey.trim() === '') {
-      setAutoDetectStatus('');
-      setKeyIsValid(false);
+  // BOW Support Gate countdown effect
+  useEffect(() => {
+    if (showBowSupportGate && bowSupportCountdown > 0) {
+      bowSupportTimerRef.current = setTimeout(() => {
+        setBowSupportCountdown(prev => prev - 1);
+      }, 1000);
+    }
+    return () => {
+      if (bowSupportTimerRef.current) {
+        clearTimeout(bowSupportTimerRef.current);
+      }
+    };
+  }, [showBowSupportGate, bowSupportCountdown]);
+
+  // Support timer countdown effect
+  useEffect(() => {
+    if (showSupportTimer && supportCountdown > 0) {
+      supportTimerRef.current = setTimeout(() => {
+        setSupportCountdown(prev => prev - 1);
+      }, 1000);
+    } else if (showSupportTimer && supportCountdown === 0) {
+      // Timer finished, close the modal (generation already started)
+      setShowSupportTimer(false);
+      setSupportCountdown(5); // Reset for next time
+    }
+    return () => {
+      if (supportTimerRef.current) {
+        clearTimeout(supportTimerRef.current);
+      }
+    };
+  }, [showSupportTimer, supportCountdown]);
+
+  // Mode: 'click' (open file picker after) or 'drop' (process dropped file after)
+  const [bowGateMode, setBowGateMode] = useState('click');
+  const isProceedingRef = useRef(false);
+
+  // Function to show support gate when user clicks the upload area
+  const handleUploadClick = (e) => {
+    // If we're programmatically opening the file picker, don't show the gate again
+    if (isProceedingRef.current) {
+      isProceedingRef.current = false;
       return;
     }
+    // Prevent the hidden file input from opening immediately
+    e.preventDefault();
+    e.stopPropagation();
+    setBowGateMode('click');
+    setShowBowSupportGate(true);
+    setBowSupportCountdown(5);
+  };
 
-    setIsDetecting(true);
-    setAutoDetectStatus('');
-
-    try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${targetKey}`);
-      const data = await res.json();
-
-      if (data.models && data.models.length > 0) {
-        const contentModels = data.models.filter((m) =>
-          m.supportedGenerationMethods?.includes('generateContent')
-        );
-
-        const formattedModels = contentModels.map((m) => {
-          const cleanId = m.name.replace('models/', '');
-          return {
-            id: cleanId,
-            name: `${m.displayName || cleanId} (${cleanId})`,
-          };
-        });
-
-        if (formattedModels.length > 0) {
-          setAvailableModels(formattedModels);
-          setKeyIsValid(true);
-
-          // Find a preferred model, excluding 3.6-flash and 3.5-flash initially
-          let preferredModel = formattedModels.find(
-            (m) => m.id.includes('flash') && !m.id.includes('3.6-flash') && !m.id.includes('3.5-flash')
-          );
-
-          // If no other flash model is found, fall back to 3.6 or 3.5 flash
-          if (!preferredModel) {
-            preferredModel = formattedModels.find(m => m.id.includes('flash'));
-          }
-
-          if (formattedModels.some((m) => m.id === selectedModel)) {
-            setSelectedModel(selectedModel);
-          } else if (preferredModel) {
-            setSelectedModel(preferredModel.id);
-          } else {
-            setSelectedModel(formattedModels[0].id);
-          }
-
-          setAutoDetectStatus(`Success! Key verified & auto-detected ${formattedModels.length} compatible models.`);
-        } else {
-          setKeyIsValid(false);
-          setAutoDetectStatus('Error: No content generation models detected for this key.');
-        }
-      } else if (data.error) {
-        setKeyIsValid(false);
-        setAutoDetectStatus(`Error: ${data.error.message}`);
-      }
-    } catch (err) {
-      setKeyIsValid(false);
-      setAutoDetectStatus(`Error fetching models: ${err.message}`);
-    } finally {
-      setIsDetecting(false);
+  // Function to intercept dropped BOW file — show support gate first
+  const interceptBowFile = (file) => {
+    if (file && file.type === 'application/pdf') {
+      setPendingBowFile(file);
+      setBowGateMode('drop');
+      setShowBowSupportGate(true);
+      setBowSupportCountdown(5);
+    } else if (file) {
+      showToast({ message: 'Please upload a valid PDF file.', type: 'error' });
     }
   };
 
-  const debouncedAutoDetect = useCallback(
-    debounce((key) => handleAutoDetectModels(key), 600),
-    []
-  );
+  // Function to proceed after support gate — either open file picker or process dropped file
+  const proceedWithBowFile = async () => {
+    setShowBowSupportGate(false);
+    setBowSupportCountdown(5);
+
+    if (bowGateMode === 'click') {
+      // Open the file picker now — set flag to prevent re-triggering the gate
+      isProceedingRef.current = true;
+      const fileInput = document.getElementById('bow-file-input');
+      if (fileInput) {
+        fileInput.click();
+      }
+    } else if (bowGateMode === 'drop' && pendingBowFile) {
+      // Process the dropped file
+      processBowFile(pendingBowFile);
+      await extractBowMetadata(pendingBowFile);
+      setPendingBowFile(null);
+    }
+  };
+
+  // Function to cancel BOW upload
+  const cancelBowUpload = () => {
+    setShowBowSupportGate(false);
+    setBowSupportCountdown(5);
+    setPendingBowFile(null);
+    // Reset the file input so the same file can be selected again
+    const fileInput = document.getElementById('bow-file-input');
+    if (fileInput) fileInput.value = '';
+  };
+
+
 
   const extractBowMetadata = async (file) => {
     if (!file) return;
 
-    if (!apiKey && !groqApiKey && !openRouterApiKey) {
+    if (!currentApiKey && !currentCerebrasApiKey && !currentOpenAiApiKey && !currentDeepSeekApiKey) {
       setMetadataExtractionError('Please enter an API Key to extract BOW metadata.');
       return;
     }
@@ -459,10 +509,11 @@ export default function Home() {
 
     try {
       const payload = new FormData();
-      payload.append('apiKey', apiKey);
-      payload.append('groqApiKey', groqApiKey);
-      payload.append('openRouterApiKey', openRouterApiKey);
-      payload.append('selectedModel', selectedModel);
+      payload.append('apiKey', currentApiKey);
+      payload.append('cerebrasApiKey', currentCerebrasApiKey);
+      payload.append('openAiApiKey', currentOpenAiApiKey);
+      payload.append('deepSeekApiKey', currentDeepSeekApiKey);
+      payload.append('selectedModel', currentSelectedModel);
       payload.append('bowFile', file);
 
       const res = await fetch('/api/extract-bow-metadata', {
@@ -517,91 +568,11 @@ export default function Home() {
     }
   };
 
-  const handleVerifyProviderKey = async (provider, key) => {
-    if (!key || key.trim() === '') {
-      if (provider === 'groq') setGroqKeyIsValid(false);
-      if (provider === 'openrouter') setOpenRouterKeyIsValid(false);
-      return;
-    }
 
-    let url, options, setDetecting, setValid;
 
-    if (provider === 'groq') {
-      url = 'https://api.groq.com/openai/v1/models';
-      options = { headers: { Authorization: `Bearer ${key}` } };
-      setDetecting = setIsDetectingGroq;
-      setValid = setGroqKeyIsValid;
-    } else if (provider === 'openrouter') {
-      url = 'https://openrouter.ai/api/v1/models';
-      options = { headers: { Authorization: `Bearer ${key}` } };
-      setDetecting = setIsDetectingOpenRouter;
-      setValid = setOpenRouterKeyIsValid;
-    } else {
-      return;
-    }
 
-    setDetecting(true);
-    setValid(false);
 
-    try {
-      const res = await fetch(url, options);
-      setValid(res.ok);
-    } catch (err) {
-      setValid(false);
-    } finally {
-      setDetecting(false);
-    }
-  };
 
-  const debouncedVerifyGroq = useCallback(
-    debounce((key) => handleVerifyProviderKey('groq', key), 600),
-    []
-  );
-  const debouncedVerifyOpenRouter = useCallback(
-    debounce((key) => handleVerifyProviderKey('openrouter', key), 600),
-    []
-  );
-
-  useEffect(() => {
-    const savedGemini = localStorage.getItem('gemini_api_key');
-    const savedGroq = localStorage.getItem('groq_api_key');
-    const savedOpenRouter = localStorage.getItem('openrouter_api_key');
-
-    if (savedGroq) {
-      setGroqApiKey(savedGroq);
-      handleVerifyProviderKey('groq', savedGroq);
-    }
-    if (savedOpenRouter) {
-      setOpenRouterApiKey(savedOpenRouter);
-      handleVerifyProviderKey('openrouter', savedOpenRouter);
-    }
-
-    if (savedGemini) {
-      setApiKey(savedGemini);
-      handleAutoDetectModels(savedGemini);
-    }
-  }, []);
-
-  const handleGeminiKeyChange = (e) => {
-    const val = e.target.value;
-    setApiKey(val);
-    localStorage.setItem('gemini_api_key', val);
-    debouncedAutoDetect(val);
-  };
-
-  const handleGroqKeyChange = (e) => {
-    const val = e.target.value;
-    setGroqApiKey(val);
-    localStorage.setItem('groq_api_key', val);
-    debouncedVerifyGroq(val);
-  };
-
-  const handleOpenRouterKeyChange = (e) => {
-    const val = e.target.value;
-    setOpenRouterApiKey(val);
-    localStorage.setItem('openrouter_api_key', val);
-    debouncedVerifyOpenRouter(val);
-  };
 
   const processBowFile = (file) => {
     if (file && file.type === 'application/pdf') {
@@ -615,8 +586,9 @@ export default function Home() {
   const handleBowFileChange = async (e) => {
     const file = e.target.files[0];
     if (file) {
+      // File was selected via the picker (after support gate) — process directly
       processBowFile(file);
-      await extractBowMetadata(file); // Call new function to extract terms and weeks
+      await extractBowMetadata(file);
     } else {
       setBowFile(null);
       setBowFileName('No file chosen');
@@ -645,14 +617,13 @@ export default function Home() {
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const droppedFile = e.dataTransfer.files[0];
-      processBowFile(droppedFile);
-      await extractBowMetadata(droppedFile);
+      interceptBowFile(droppedFile);
       e.dataTransfer.clearData();
     }
   };
 
   const handleLoadEntries = async () => {
-    if (!apiKey && !groqApiKey && !openRouterApiKey) {
+    if (!currentApiKey && !currentCerebrasApiKey && !currentOpenAiApiKey) {
       showToast({ message: 'Please enter an API Key in the API Configuration section.', type: 'error' });
       return;
     }
@@ -662,10 +633,11 @@ export default function Home() {
 
     try {
       const payload = new FormData();
-      payload.append('apiKey', apiKey);
-      payload.append('groqApiKey', groqApiKey);
-      payload.append('openRouterApiKey', openRouterApiKey);
-      payload.append('selectedModel', selectedModel);
+      payload.append('apiKey', currentApiKey);
+      payload.append('cerebrasApiKey', currentCerebrasApiKey);
+      payload.append('openAiApiKey', currentOpenAiApiKey);
+      payload.append('deepSeekApiKey', currentDeepSeekApiKey);
+      payload.append('selectedModel', currentSelectedModel);
       payload.append('term', formData.term);
       payload.append('week', formData.week);
       payload.append('subject', formData.subject);
@@ -788,7 +760,7 @@ export default function Home() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!apiKey && !groqApiKey && !openRouterApiKey) {
+    if (!currentApiKey && !currentCerebrasApiKey && !currentOpenAiApiKey && !currentDeepSeekApiKey) {
       showToast({ message: 'Please enter an API Key in the API Configuration section above.', type: 'error' });
       return;
     }
@@ -802,6 +774,21 @@ export default function Home() {
       return;
     }
 
+    // Show support timer before generation
+    setShowSupportTimer(true);
+    setSupportCountdown(5);
+  };
+
+  // Handle support timer completion - proceed with generation
+  useEffect(() => {
+    if (showSupportTimer && supportCountdown === 0) {
+      setShowSupportTimer(false);
+      proceedWithGeneration();
+    }
+  }, [showSupportTimer, supportCountdown]);
+
+  const proceedWithGeneration = async () => {
+    console.log('[DEBUG] Starting generation...');
     setLoading(true);
     setLessonPlan(null);
 
@@ -809,6 +796,7 @@ export default function Home() {
     abortControllerRef.current = controller; // Store it in ref
 
     try {
+      console.log('[DEBUG] Preparing payload...');
       const finalResources = [...formData.resources];
       if (finalResources.includes('Other (Please specify)...') && customResourceText.trim()) {
         const index = finalResources.indexOf('Other (Please specify)...');
@@ -888,19 +876,24 @@ export default function Home() {
         gradeLevel: formData.gradeAndSection,
         teacherName: formData.teacherName,
         checkerName: formData.masterTeacherName,
-        geminiApiKey: apiKey,
-        groqApiKey: groqApiKey,
-        openRouterApiKey: openRouterApiKey,
-        selectedModel: selectedModel,
+        geminiApiKey: currentApiKey,
+        cerebrasApiKey: currentCerebrasApiKey,
+        openAiApiKey: currentOpenAiApiKey,
+        deepSeekApiKey: currentDeepSeekApiKey,
+        selectedModel: currentSelectedModel,
+        includeCotIndicators,
       };
 
+      console.log('[DEBUG] Sending request to /api/generate...');
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
 
+      console.log('[DEBUG] Response status:', res.status);
       const data = await res.json();
+      console.log('[DEBUG] Response data:', data);
       if (!res.ok) throw new Error(data.error || 'Failed to generate plan');
 
       if (data.plan) {
@@ -949,204 +942,229 @@ export default function Home() {
   const masterTeacherSignatory = parseNameAndDesignation(snapshotData?.masterTeacherName, lessonPlan?.signatories?.checkedBy, '');
   const principalSignatory = parseNameAndDesignation(snapshotData?.principalName, lessonPlan?.signatories?.notedBy, '');
 
+  // Style constants for DOCX generation
+  const tableLabelStyle = { fill: '#F3F4F6', bold: true, color: '1B365D' };
+  const tableSubHeaderStyle = { fill: '#4B5563', bold: true, color: 'FFFFFF' };
+  const TEMPLATE_LABEL_FILL = '#F3F4F6';
+  const TEMPLATE_BANNER_FILL = '#1B365D';
+  const titleText = `LESSON PLAN MATRIX\n${snapshotData?.subject?.toUpperCase() || 'SUBJECT'} ${snapshotData?.term?.toUpperCase()} ${snapshotData?.week?.toUpperCase()}`;
+
   // Matrix Landscape DOCX Download
   const handleDownloadDocx = async () => {
     if (!lessonPlan) return;
     setDownloadingDocx(true);
 
     try {
-      const titleText = `LESSON PLAN TEMPLATE FOR ${(snapshotData?.subject || 'SUBJECT').toUpperCase()} ${(snapshotData?.term || '').toUpperCase()} ${(snapshotData?.week || '').toUpperCase()}`;
-      
-      const tableSubHeaderStyle = { fill: "4B5563", color: "FFFFFF", bold: true };
-      const tableLabelStyle = { color: "1B365D", bold: true };
+      if (typeof window !== 'undefined') {
+        const { 
+          Document, 
+          Packer, 
+          Paragraph, 
+          TextRun, 
+          Table, 
+          TableRow, 
+          TableCell, 
+          WidthType, 
+          AlignmentType, 
+          HeadingLevel,
+          ShadingType,
+          PageOrientation,
+          BorderStyle,
+          VerticalAlign,
+          HeightRule
+        } = await import('docx');
+        const { saveAs } = await import('file-saver');
 
-      const headerTable = new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
-        tableCellMar: TEMPLATE_TABLE_CELL_MARGINS,
-        rows: [
-          new TableRow({ children: [createCell("Lesson Title", { ...tableLabelStyle, widthPct: 25, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }), createCell(formatDocxText(lessonPlan.header?.lessonTitle || snapshotData?.lessonName), { widthPct: 75, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })] }),
-          new TableRow({ children: [createCell("Learning Area/s", { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }), createCell(formatDocxText(lessonPlan.header?.learningArea || snapshotData?.subject), { borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })] }),
-          new TableRow({ children: [createCell("Name of Teacher/s", { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }), createCell(formatDocxText(getOnlyName(lessonPlan.header?.teacherName || snapshotData?.teacherName)), { borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })] }),
-          new TableRow({ children: [createCell("Grade Level and Section", { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }), createCell(formatDocxText(lessonPlan.header?.gradeLevelSection || snapshotData?.gradeAndSection), { borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })] }),
-          new TableRow({ children: [createCell("No. of Sessions", { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }), createCell(formatDocxText(snapshotData?.noOfSessions), { bold: true, color: "1B365D", borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })] }),
-          new TableRow({ children: [createCell("References", { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }), createCell(formatDocxText(lessonPlan.header?.references || snapshotData?.references), { borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })] }),
-          new TableRow({ children: [createCell("Declaration of AI use", { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }), createCell(formatDocxText(lessonPlan.header?.declarationOfAiUse || `Consistent with policy guidelines on AI in basic education...`), { borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })] })
-        ]
-      });
+        // Helper: resolve all creates in a children array (some may be Promises from async createCell)
+        const resolveCells = async (children) => Promise.all(children.map(c => Promise.resolve(c)));
 
-      const standardsTable = new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
-        tableCellMar: TEMPLATE_TABLE_CELL_MARGINS,
-        rows: [
-          new TableRow({ children: [createCell("Learning Competency and Curriculum Standards:", { fill: TEMPLATE_LABEL_FILL, bold: true, color: "1B365D", borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })] }),
-          new TableRow({ 
-            children: [
-              createCell(
-                `Learning Competency:\n${formatDocxText(lessonPlan.curriculumStandards?.learningCompetency || snapshotData?.learningCompetency)}\n\n` +
-                `Content Standards:\n${formatDocxText(lessonPlan.curriculumStandards?.contentStandard || snapshotData?.contentStandards)}\n\n` +
-                `Performance Standards:\n${formatDocxText(lessonPlan.curriculumStandards?.performanceStandard || snapshotData?.performanceStandards)}`,
-                { borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }
-              )
-            ] 
-          })
-        ]
-      });
-
-      const createMatrixTable = (rowsData) => {
-        const colWidth = Math.floor(83 / numSessions);
-        const headerRow = new TableRow({
-          children: [
-            createCell("Phase / Component", { ...tableSubHeaderStyle, widthPct: 17, borderColor: TEMPLATE_BORDER_COLOR_MATRIX, cellMargins: TEMPLATE_MATRIX_CELL_MARGINS }),
-            ...sessionHeaders.map(h => createCell(h, { ...tableSubHeaderStyle, widthPct: colWidth, borderColor: TEMPLATE_BORDER_COLOR_MATRIX, cellMargins: TEMPLATE_MATRIX_CELL_MARGINS }))
+        const headerTable = new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          tableCellMar: TEMPLATE_TABLE_CELL_MARGINS,
+          rows: [
+            new TableRow({ children: await Promise.all([createCell("Lesson Title", { ...tableLabelStyle, widthPct: 25, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }), createCell(formatDocxText(lessonPlan.header?.lessonTitle || snapshotData?.lessonName), { widthPct: 75, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })]) }),
+            new TableRow({ children: await Promise.all([createCell("Learning Area/s", { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }), createCell(formatDocxText(lessonPlan.header?.learningArea || snapshotData?.subject), { borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })]) }),
+            new TableRow({ children: await Promise.all([createCell("Name of Teacher/s", { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }), createCell(formatDocxText(getOnlyName(lessonPlan.header?.teacherName || snapshotData?.teacherName)), { borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })]) }),
+            new TableRow({ children: await Promise.all([createCell("Grade Level and Section", { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }), createCell(formatDocxText(lessonPlan.header?.gradeLevelSection || snapshotData?.gradeAndSection), { borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })]) }),
+            new TableRow({ children: await Promise.all([createCell("No. of Sessions", { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }), createCell(formatDocxText(snapshotData?.noOfSessions), { bold: true, color: "1B365D", borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })]) }),
+            new TableRow({ children: await Promise.all([createCell("References", { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }), createCell(formatDocxText(lessonPlan.header?.references || snapshotData?.references), { borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })]) }),
+            new TableRow({ children: await Promise.all([createCell("Declaration of AI use", { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }), createCell(formatDocxText(lessonPlan.header?.declarationOfAiUse || `Consistent with policy guidelines on AI in basic education...`), { borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })]) })
           ]
         });
 
-        const dataRows = rowsData.map(row => {
-          return new TableRow({
-            height: row.height, // Pass height directly to TableRow
-            children: [
-              createCell(row.label, { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_MATRIX, cellMargins: TEMPLATE_MATRIX_CELL_MARGINS }),
-              ...sessionHeaders.map((_, idx) => createCell(row.getValue(idx), { borderColor: TEMPLATE_BORDER_COLOR_MATRIX, cellMargins: TEMPLATE_MATRIX_CELL_MARGINS, minHeight: row.minHeight }))
-            ]
+        const standardsTable = new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          tableCellMar: TEMPLATE_TABLE_CELL_MARGINS,
+          rows: [
+            new TableRow({ children: [await createCell("Learning Competency and Curriculum Standards:", { fill: TEMPLATE_LABEL_FILL, bold: true, color: "1B365D", borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS })] }),
+            new TableRow({ 
+              children: [
+                await createCell(
+                  `**Learning Competency:**\n${formatDocxText(lessonPlan.curriculumStandards?.learningCompetency || snapshotData?.learningCompetency)}\n\n` +
+                  `**Content Standards:**\n${formatDocxText(lessonPlan.curriculumStandards?.contentStandard || snapshotData?.contentStandards)}\n\n` +
+                  `**Performance Standards:**\n${formatDocxText(lessonPlan.curriculumStandards?.performanceStandard || snapshotData?.performanceStandards)}`,
+                  { borderColor: TEMPLATE_BORDER_COLOR_HEADER, cellMargins: TEMPLATE_HEADER_CELL_MARGINS }
+                )
+              ] 
+            })
+          ]
+        });
+
+        const createMatrixTable = async (rowsData) => {
+          const colWidth = Math.floor(83 / numSessions);
+          const headerRow = new TableRow({
+            children: await Promise.all([
+              createCell("Phase / Component", { ...tableSubHeaderStyle, widthPct: 17, borderColor: TEMPLATE_BORDER_COLOR_MATRIX, cellMargins: TEMPLATE_MATRIX_CELL_MARGINS, alignment: AlignmentType.CENTER }),
+              ...sessionHeaders.map(h => createCell(h, { ...tableSubHeaderStyle, widthPct: colWidth, borderColor: TEMPLATE_BORDER_COLOR_MATRIX, cellMargins: TEMPLATE_MATRIX_CELL_MARGINS, alignment: AlignmentType.CENTER }))
+            ])
           });
+
+          const dataRows = await Promise.all(rowsData.map(async row => {
+            return new TableRow({
+              height: row.height,
+              children: await Promise.all([
+                createCell(row.label, { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_MATRIX, cellMargins: TEMPLATE_MATRIX_CELL_MARGINS }),
+                ...sessionHeaders.map((_, idx) => createCell(row.getValue(idx), { borderColor: TEMPLATE_BORDER_COLOR_MATRIX, cellMargins: TEMPLATE_MATRIX_CELL_MARGINS, minHeight: row.minHeight }))
+              ])
+            });
+          }));
+
+          return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, tableCellMar: TEMPLATE_TABLE_CELL_MARGINS, rows: [headerRow, ...dataRows], borders: await createBorderSet(TEMPLATE_BORDER_COLOR_MATRIX) });
+        };
+
+        const intentionsTable = await createMatrixTable([
+          {
+            label: "Learning Objectives (KSA)",
+            getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.learningObjectives || (Array.isArray(lessonPlan.learningObjectives) ? lessonPlan.learningObjectives[idx] : lessonPlan.learningObjectives))
+          },
+          {
+            label: "Learner Context",
+            getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.learnerContext || (Array.isArray(lessonPlan.learnerContext) ? lessonPlan.learnerContext[idx] : lessonPlan.learnerContext) || snapshotData?.learnerContext)
+          }
+        ]);
+
+        const experienceTable = await createMatrixTable([
+          {
+            label: "Pre-Lesson",
+            getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.preLesson || (Array.isArray(lessonPlan.learningExperience?.preLesson) ? lessonPlan.learningExperience.preLesson[idx] : lessonPlan.learningExperience?.preLesson))
+          },
+          {
+            label: "Flow",
+            getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.flow || (Array.isArray(lessonPlan.learningExperience?.flow) ? lessonPlan.learningExperience.flow[idx] : lessonPlan.learningExperience?.flow))
+          },
+          {
+            label: "Learning Resources",
+            getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.learningResources || (Array.isArray(lessonPlan.learningResources) ? lessonPlan.learningResources[idx] : lessonPlan.learningResources) || snapshotData?.resources)
+          },
+          {
+            label: "Opportunities for integration",
+            getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.opportunitiesForIntegration || (Array.isArray(lessonPlan.opportunitiesForIntegration) ? lessonPlan.opportunitiesForIntegration[idx] : lessonPlan.opportunitiesForIntegration))
+          }
+        ]);
+
+        const assessmentTable = await createMatrixTable([
+          {
+            label: "Formative Assessment",
+            getValue: (idx) => {
+              const assessData = lessonPlan?.sessions?.[idx]?.formativeAssessment || 
+                                 (Array.isArray(lessonPlan?.assessingLearning?.formativeAssessment) 
+                                    ? lessonPlan.assessingLearning.formativeAssessment[idx] 
+                                    : lessonPlan?.assessingLearning?.formativeAssessment);
+              return formatDocxText(assessData);
+            }
+          }
+        ]);
+
+        const waysForwardTable = await createMatrixTable([
+          {
+            label: "Extended learning opportunities",
+            getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.extendedLearning || (Array.isArray(lessonPlan.waysForward?.extendedLearningOpportunities) ? lessonPlan.waysForward.extendedLearningOpportunities[idx] : lessonPlan.waysForward?.extendedLearningOpportunities))
+          },
+          {
+            label: "Reflections",
+            getValue: () => "", // Make it blank
+            height: { value: 2835, rule: 'exact' }
+          }
+        ]);
+
+        const signatoriesTable = new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          rows: [
+            new TableRow({
+              children: await Promise.all([
+                createCell(`**Prepared by:**\n\n\n${teacherSignatory.name || ''}\n${teacherSignatory.designation || ''}`, { widthPct: 33 }),
+                createCell(`**Checked and Reviewed:**\n\n\n${masterTeacherSignatory.name || ''}\n${masterTeacherSignatory.designation || ''}`, { widthPct: 33 }),
+                createCell(`**Noted by:**\n\n\n${principalSignatory.name || ''}\n${principalSignatory.designation || ''}`, { widthPct: 34 }),
+              ])
+            })
+          ]
         });
 
-                return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, tableCellMar: TEMPLATE_TABLE_CELL_MARGINS, rows: [headerRow, ...dataRows], borders: createBorderSet(TEMPLATE_BORDER_COLOR_MATRIX) });
-      };
-
-      const intentionsTable = createMatrixTable([
-        {
-          label: "Learning Objectives (KSA)",
-          getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.learningObjectives || (Array.isArray(lessonPlan.learningObjectives) ? lessonPlan.learningObjectives[idx] : lessonPlan.learningObjectives))
-        },
-        {
-          label: "Learner Context",
-          getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.learnerContext || (Array.isArray(lessonPlan.learnerContext) ? lessonPlan.learnerContext[idx] : lessonPlan.learnerContext) || snapshotData?.learnerContext)
-        }
-      ]);
-
-      const experienceTable = createMatrixTable([
-        {
-          label: "Pre-Lesson",
-          getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.preLesson || (Array.isArray(lessonPlan.learningExperience?.preLesson) ? lessonPlan.learningExperience.preLesson[idx] : lessonPlan.learningExperience?.preLesson))
-        },
-        {
-          label: "Flow",
-          getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.flow || (Array.isArray(lessonPlan.learningExperience?.flow) ? lessonPlan.learningExperience.flow[idx] : lessonPlan.learningExperience?.flow))
-        },
-        {
-          label: "Learning Resources",
-          getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.learningResources || (Array.isArray(lessonPlan.learningResources) ? lessonPlan.learningResources[idx] : lessonPlan.learningResources) || snapshotData?.resources)
-        },
-        {
-          label: "Opportunities for integration",
-          getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.opportunitiesForIntegration || (Array.isArray(lessonPlan.opportunitiesForIntegration) ? lessonPlan.opportunitiesForIntegration[idx] : lessonPlan.opportunitiesForIntegration))
-        }
-      ]);
-
-      const assessmentTable = createMatrixTable([
-        {
-          label: "Formative Assessment",
-          getValue: (idx) => {
-            const assessData = lessonPlan?.sessions?.[idx]?.formativeAssessment || 
-                               (Array.isArray(lessonPlan?.assessingLearning?.formativeAssessment) 
-                                  ? lessonPlan.assessingLearning.formativeAssessment[idx] 
-                                  : lessonPlan?.assessingLearning?.formativeAssessment);
-            return formatDocxText(assessData);
-          }
-        }
-      ]);
-
-      const waysForwardTable = createMatrixTable([
-        {
-          label: "Extended learning opportunities",
-          getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.extendedLearning || (Array.isArray(lessonPlan.waysForward?.extendedLearningOpportunities) ? lessonPlan.waysForward.extendedLearningOpportunities[idx] : lessonPlan.waysForward?.extendedLearningOpportunities))
-        },
-        {
-          label: "Reflections",
-          getValue: () => "", // Make it blank
-          height: { value: 2835, rule: 'exact' }
-        }
-      ]);
-
-      const signatoriesTable = new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
-        rows: [
-          new TableRow({
+        const sectionTitleBanner = (title, subtitle) => [
+          new Paragraph({
+            shading: { fill: "1B365D", type: ShadingType.CLEAR },
             children: [
-              createCell(`Prepared by:\n\n\n${teacherSignatory.name || ''}\n${teacherSignatory.designation || ''}`, { widthPct: 33 }),
-              createCell(`Checked and Reviewed:\n\n\n${masterTeacherSignatory.name || ''}\n${masterTeacherSignatory.designation || ''}`, { widthPct: 33 }),
-              createCell(`Noted by:\n\n\n${principalSignatory.name || ''}\n${principalSignatory.designation || ''}`, { widthPct: 34 }),
+              new TextRun({ text: `${title} `, bold: true, color: "FFFFFF", size: 22, font: "Arial" }),
+              new TextRun({ text: subtitle, color: "E2E8F0", size: 18, font: "Arial" })
             ]
           })
-        ]
-      });
+        ];
 
-      const sectionTitleBanner = (title, subtitle) => [
-        new Paragraph({
-          shading: { fill: "1B365D", type: ShadingType.CLEAR },
-          children: [
-            new TextRun({ text: `${title} `, bold: true, color: "FFFFFF", size: 22, font: "Arial" }),
-            new TextRun({ text: subtitle, color: "E2E8F0", size: 18, font: "Arial" })
+        const doc = new Document({
+          styles: { default: { document: { run: { font: "Arial" } } } },
+          sections: [
+            {
+              properties: {
+                page: {
+                  size: { width: 18720, height: 12240 },
+                  margin: { top: 720, bottom: 720, left: 720, right: 720 },
+                  orientation: PageOrientation.LANDSCAPE
+                }
+              },
+              children: [
+                new Paragraph({
+                  alignment: AlignmentType.CENTER,
+                  heading: HeadingLevel.HEADING_1,
+                  children: [
+                    new TextRun({
+                      text: titleText,
+                      bold: true,
+                      color: "1B365D",
+                      size: 26,
+                      font: "Arial"
+                    })
+                  ]
+                }),
+                new Paragraph({ text: "" }),
+                headerTable,
+                new Paragraph({ text: "" }),
+                ...sectionTitleBanner("Intentions.", "Meaningful learning experiences are anchored in how we frame them. Start by deciding what you want learners to master by the end of the lesson – keep it clear and simple. Remember: Understanding your learners' evolving context and designing around it ensure that your lessons connect with and are relevant to them."),
+                standardsTable,
+                new Paragraph({ text: "" }),
+                intentionsTable,
+                new Paragraph({ text: "" }),
+                ...sectionTitleBanner("Learning Experience.", "A learning experience is like a thoughtfully designed journey. Each activity and interaction builds towards meaningful understanding and growth. Identify activities and interactions to help learners gain knowledge, skills, or understanding in a purposeful way."),
+                experienceTable,
+                new Paragraph({ text: "" }),
+                ...sectionTitleBanner("Assessment.", "Assessments reveal what learners have gained and what they still need help with. These are helpful in providing you with information to guide your future instruction throughout the entire session."),
+                assessmentTable,
+                new Paragraph({ text: "" }),
+                ...sectionTitleBanner("Ways Forward.", "Meaningful learning can also happen beyond the classroom – for both the learners and the teacher. Pause and reflect on what happened today."),
+                waysForwardTable,
+                new Paragraph({ text: "" }),
+                new Paragraph({ text: "" }),
+                signatoriesTable
+              ]
+            }
           ]
-        })
-      ];
-
-      const doc = new Document({
-        styles: { default: { document: { run: { font: "Arial" } } } },
-        sections: [
-          {
-            properties: {
-              page: {
-                size: { width: 18720, height: 12240 },
-                margin: { top: 720, bottom: 720, left: 720, right: 720 },
-                orientation: PageOrientation.LANDSCAPE
-              }
-            },
-            children: [
-              new Paragraph({
-                alignment: AlignmentType.CENTER,
-                heading: HeadingLevel.HEADING_1,
-                children: [
-                  new TextRun({
-                    text: titleText,
-                    bold: true,
-                    color: "1B365D",
-                    size: 26,
-                    font: "Arial"
-                  })
-                ]
-              }),
-              new Paragraph({ text: "" }),
-              headerTable,
-              new Paragraph({ text: "" }),
-              ...sectionTitleBanner("Intentions.", "Meaningful learning experiences are anchored in how we frame them. Start by deciding what you want learners to master by the end of the lesson – keep it clear and simple. Remember: Understanding your learners' evolving context and designing around it ensure that your lessons connect with and are relevant to them."),
-              standardsTable,
-              new Paragraph({ text: "" }),
-              intentionsTable,
-              new Paragraph({ text: "" }),
-              ...sectionTitleBanner("Learning Experience.", "A learning experience is like a thoughtfully designed journey. Each activity and interaction builds towards meaningful understanding and growth. Identify activities and interactions to help learners gain knowledge, skills, or understanding in a purposeful way."),
-              experienceTable,
-              new Paragraph({ text: "" }),
-              ...sectionTitleBanner("Assessment.", "Assessments reveal what learners have gained and what they still need help with. These are helpful in providing you with information to guide your future instruction throughout the entire session."),
-              assessmentTable,
-              new Paragraph({ text: "" }),
-              ...sectionTitleBanner("Ways Forward.", "Meaningful learning can also happen beyond the classroom – for both the learners and the teacher. Pause and reflect on what happened today."),
-              waysForwardTable,
-              new Paragraph({ text: "" }),
-              new Paragraph({ text: "" }),
-              signatoriesTable
-            ]
-          }
-        ]
-      });
-
-      const blob = await Packer.toBlob(doc);
-      const subjectName = snapshotData?.subject || 'Subject';
-      const termName = snapshotData?.term || 'Term 1';
-      const weekName = snapshotData?.week || 'Week 1';
-      
-      saveAs(blob, `${subjectName}_${termName}_${weekName}_Matrix.docx`);
+        });
+        
+        const blob = await Packer.toBlob(doc);
+        const subjectName = snapshotData?.subject || 'Subject';
+        const termName = snapshotData?.term || 'Term 1';
+        const weekName = snapshotData?.week || 'Week 1';
+        saveAs(blob, `${subjectName}_${termName}_${weekName}_Matrix.docx`);
+      }
     } catch (err) {
       console.error('Error exporting DOCX:', err);
       showToast({ message: 'Failed to generate Word document.', type: 'error' });
@@ -1161,6 +1179,9 @@ export default function Home() {
     setDownloadingSeparatedDocx(true);
 
     try {
+      const { Document, Packer, PageOrientation } = await import('docx');
+      const { saveAs } = await import('file-saver');
+
       const headerBannerStyle = { fill: TEMPLATE_BANNER_FILL, color: "333333", bold: true };
       const matrixBorder = TEMPLATE_BORDER_COLOR_MATRIX;
       const matrixMargins = TEMPLATE_MATRIX_CELL_MARGINS;
@@ -1171,7 +1192,7 @@ export default function Home() {
       for (let idx = 0; idx < numSessions; idx++) {
         const sessionLabel = `Session ${idx + 1} of ${numSessions}`;
 
-        const sessionTable = buildSessionTable({
+        const sessionTable = await buildSessionTable({
           lessonPlan,
           snapshotData,
           sessionIndex: idx,
@@ -1180,6 +1201,8 @@ export default function Home() {
           matrixBorder: TEMPLATE_BORDER_COLOR_MATRIX,
           matrixMargins: TEMPLATE_MATRIX_CELL_MARGINS,
         });
+
+        const signatoriesTable = await buildSignatoriesTable({ teacherSignatory, masterTeacherSignatory, principalSignatory });
 
         sections.push({
           properties: {
@@ -1191,22 +1214,23 @@ export default function Home() {
           },
           children: [
             sessionTable,
-            buildSignatoriesTable({ teacherSignatory, masterTeacherSignatory, principalSignatory })
+            signatoriesTable
           ]
         });
       }
 
-      const doc = new Document({
-        styles: { default: { document: { run: { font: "Arial" } } } },
-        sections: sections
-      });
+      if (typeof window !== 'undefined') {
+        const doc = new Document({
+          styles: { default: { document: { run: { font: "Arial" } } } },
+          sections: sections
+        });
 
-      const blob = await Packer.toBlob(doc);
-      const subjectName = snapshotData?.subject || 'Subject';
-      const termName = snapshotData?.term || 'Term 1';
-      const weekName = snapshotData?.week || 'Week 1';
-
-      saveAs(blob, `${subjectName}_${termName}_${weekName}_Daily_Separated.docx`);
+        const blob = await Packer.toBlob(doc);
+        const subjectName = snapshotData?.subject || 'Subject';
+        const termName = snapshotData?.term || 'Term 1';
+        const weekName = snapshotData?.week || 'Week 1';
+        saveAs(blob, `${subjectName}_${termName}_${weekName}_Daily_Separated.docx`);
+      }
     } catch (err) {
       console.error('Error exporting Separated DOCX:', err);
       showToast({ message: 'Failed to generate separated daily lesson plans.', type: 'error' });
@@ -1217,6 +1241,12 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-slate-900 py-12 px-4 font-sans text-slate-200">
+      {instructionModalProvider && (
+        <ApiKeyInstructionsModal 
+            provider={instructionModalProvider} 
+            onClose={() => setInstructionModalProvider(null)} 
+        />
+      )}
       
       {/* DISCLAIMER GREETING POP-UP MODAL */}
       {showDisclaimerModal && (
@@ -1264,6 +1294,126 @@ export default function Home() {
                 className="w-full bg-[#1B365D] hover:bg-[#254677] border border-[#F59E0B]/30 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-2.5 px-4 rounded-xl transition shadow-lg shadow-[#1B365D]/40 text-sm"
               >
                 Continue to IlawCraft
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SUPPORT TIMER OVERLAY */}
+      {showSupportTimer && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 sm:p-8 max-w-md w-full shadow-2xl space-y-5 text-slate-200 relative animate-in fade-in zoom-in duration-200">
+            <div className="flex items-center gap-3 border-b border-slate-700 pb-3">
+              <IlawLogo className="w-10 h-10 shrink-0" />
+              <h2 className="text-xl font-bold text-white">Support IlawCraft ☕</h2>
+            </div>
+
+            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+              Before generating your lesson plan, please consider supporting IlawCraft's ongoing development and server costs. Every contribution helps keep this tool free for DepEd teachers! 💛
+            </p>
+
+            <div className="bg-slate-900/80 border border-slate-700 rounded-xl p-4 space-y-3">
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">GCash Support</div>
+              <div className="flex items-center justify-between bg-slate-800 border border-slate-700 rounded-lg p-3">
+                <span className="font-mono text-lg font-bold text-[#F59E0B] tracking-wider">09912043738</span>
+                <button
+                  type="button"
+                  onClick={handleCopyGCash}
+                  className="bg-[#1B365D] hover:bg-[#254677] text-white p-2 rounded-md transition flex items-center gap-1 text-xs font-semibold border border-[#F59E0B]/30"
+                >
+                  {copied ? <Check className="w-4 h-4 text-emerald-300" /> : <Copy className="w-4 h-4 text-amber-400" />}
+                  <span>{copied ? 'Copied' : 'Copy'}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-col items-center gap-2">
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Or scan to pay</div>
+              <img
+                src="/qr code gcash.jpg"
+                alt="GCash QR Code"
+                className="w-36 h-36 object-contain bg-white rounded-lg p-1 border border-slate-700"
+              />
+            </div>
+
+            <div className="pt-2 border-t border-slate-700 space-y-3">
+              <div className="flex items-center justify-center gap-2 text-sm font-bold text-amber-400">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Please wait {supportCountdown}s...
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BOW UPLOAD SUPPORT GATE MODAL */}
+      {showBowSupportGate && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 sm:p-8 max-w-md w-full shadow-2xl space-y-5 text-slate-200 relative animate-in fade-in zoom-in duration-200">
+            <div className="flex items-center gap-3 border-b border-slate-700 pb-3">
+              <IlawLogo className="w-10 h-10 shrink-0" />
+              <h2 className="text-xl font-bold text-white">Support IlawCraft ☕</h2>
+            </div>
+
+            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+              Before uploading your BOW PDF, please consider supporting IlawCraft's ongoing development and server costs. Every contribution helps keep this tool free for DepEd teachers! 💛
+            </p>
+
+            <div className="bg-slate-900/80 border border-slate-700 rounded-xl p-4 space-y-3">
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">GCash Support</div>
+              <div className="flex items-center justify-between bg-slate-800 border border-slate-700 rounded-lg p-3">
+                <span className="font-mono text-lg font-bold text-[#F59E0B] tracking-wider">09912043738</span>
+                <button
+                  type="button"
+                  onClick={handleCopyGCash}
+                  className="bg-[#1B365D] hover:bg-[#254677] text-white p-2 rounded-md transition flex items-center gap-1 text-xs font-semibold border border-[#F59E0B]/30"
+                >
+                  {copied ? <Check className="w-4 h-4 text-emerald-300" /> : <Copy className="w-4 h-4 text-amber-400" />}
+                  <span>{copied ? 'Copied' : 'Copy'}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-col items-center gap-2">
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Or scan to pay</div>
+              <img
+                src="/qr code gcash.jpg"
+                alt="GCash QR Code"
+                className="w-36 h-36 object-contain bg-white rounded-lg p-1 border border-slate-700"
+              />
+            </div>
+
+            <div className="pt-2 border-t border-slate-700 space-y-3">
+              <button
+                type="button"
+                onClick={proceedWithBowFile}
+                disabled={bowSupportCountdown > 0}
+                className={`w-full font-bold py-3 px-4 rounded-xl transition flex items-center justify-center gap-2 text-sm ${
+                  bowSupportCountdown > 0
+                    ? 'bg-slate-700 text-slate-400 cursor-not-allowed border border-slate-600'
+                    : 'bg-[#1B365D] hover:bg-[#254677] text-white shadow-lg shadow-[#1B365D]/40 border border-[#F59E0B]/30'
+                }`}
+              >
+                {bowSupportCountdown > 0 ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+                    Please wait {bowSupportCountdown}s...
+                  </>
+                ) : (
+                  <>
+                    <UploadCloud className="w-4 h-4 text-amber-400" />
+                    Continue to Upload
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={cancelBowUpload}
+                className="w-full text-xs text-slate-500 hover:text-slate-300 transition py-1"
+              >
+                Cancel upload
               </button>
             </div>
           </div>
@@ -1368,177 +1518,13 @@ export default function Home() {
         </div>
 
         {/* API CONFIGURATION WITH EXACT MATCHING REFERENCE DETAIL DESIGN */}
-        <div className="bg-slate-800/80 border border-slate-700 rounded-2xl p-6 sm:p-8 space-y-5 shadow-lg">
-          
-          {/* 1. GEMINI CARD */}
-          <div className="bg-[#1C142D] border border-[#6B46C1]/50 rounded-2xl p-5 space-y-3 shadow-md">
-            <div className="flex items-center justify-between">
-              <label className="block text-sm sm:text-base font-bold text-purple-300 flex items-center gap-2">
-                <span>✨</span> Google Gemini API Key <span className="text-purple-400 font-normal">* (required)</span>
-              </label>
-              {isDetecting && (
-                <span className="text-xs text-purple-400 font-semibold flex items-center gap-1">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Verifying...
-                </span>
-              )}
-              {keyIsValid && !isDetecting && (
-                <span className="text-xs text-emerald-300 bg-emerald-950/60 border border-emerald-800 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Key Verified
-                </span>
-              )}
-            </div>
-
-            <form onSubmit={(e) => e.preventDefault()}>
-              <input type="text" name="username" autoComplete="username" className="hidden" tabIndex={-1} />
-              <input
-                type="password"
-                autoComplete="new-password"
-                value={apiKey}
-                onChange={handleGeminiKeyChange}
-                placeholder="Paste your Gemini API key (from aistudio.google.com)"
-                className={`w-full bg-slate-900 border rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:outline-none font-mono ${
-                  autoDetectStatus.startsWith('Error')
-                    ? 'border-red-500/60 focus:ring-red-500'
-                    : keyIsValid
-                    ? 'border-emerald-500/60 focus:ring-emerald-500'
-                    : 'border-purple-800/60 focus:ring-purple-500'
-                }`}
-              />
-            </form>
-
-            <p className="text-xs text-purple-300/80 leading-relaxed">
-              Required — free, takes ~2 minutes at{' '}
-              <a
-                href="https://aistudio.google.com/apikey"
-                target="_blank"
-                rel="noreferrer"
-                className="font-bold underline text-purple-300 hover:text-purple-100"
-              >
-                aistudio.google.com/apikey
-              </a>
-              . Use your existing Gmail account, no separate signup. Your key stays in your browser and is never shared.
-            </p>
-          </div>
-
-          {/* 2. GROQ CARD */}
-          <div className="bg-[#26150B] border border-[#C05621]/50 rounded-2xl p-5 space-y-3 shadow-md">
-            <div className="flex items-center justify-between">
-              <label className="block text-sm sm:text-base font-bold text-amber-400 flex items-center gap-2">
-                <span>⚡</span> Groq API Key <span className="text-amber-500 font-normal">(strongly recommended)</span>
-              </label>
-              {isDetectingGroq && (
-                <span className="text-xs text-amber-400 font-semibold flex items-center gap-1">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Verifying...
-                </span>
-              )}
-              {groqKeyIsValid && !isDetectingGroq && (
-                <span className="text-xs text-emerald-300 bg-emerald-950/60 border border-emerald-800 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Key Verified
-                </span>
-              )}
-            </div>
-            <form onSubmit={(e) => e.preventDefault()}>
-              <input type="text" name="username" autoComplete="username" className="hidden" tabIndex={-1} />
-              <input
-                type="password"
-                autoComplete="new-password"
-                value={groqApiKey}
-                onChange={handleGroqKeyChange}
-                placeholder="Paste your Groq API key"
-                className="w-full bg-slate-900 border border-amber-900/60 rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-amber-500 focus:outline-none font-mono"
-              />
-            </form>
-            <p className="text-xs text-amber-300/80 leading-relaxed">
-              Not required, but without it, generation falls back to Gemini alone — if Gemini is busy, you'll wait longer or hit an error. Adding a free key from{' '}
-              <a
-                href="https://console.groq.com"
-                target="_blank"
-                rel="noreferrer"
-                className="font-bold underline text-amber-300 hover:text-amber-100"
-              >
-                console.groq.com
-              </a>{' '}
-              (~1 minute) gives you an instant backup.
-            </p>
-          </div>
-
-          {/* 3. OPENROUTER CARD */}
-          <div className="bg-[#131B32] border border-[#3B82F6]/40 rounded-2xl p-5 space-y-3 shadow-md">
-            <div className="flex items-center justify-between">
-              <label className="block text-sm sm:text-base font-bold text-indigo-300 flex items-center gap-2">
-                <span>🔑</span> OpenRouter API Key <span className="text-indigo-400 font-normal">(Optional — final fallback)</span>
-              </label>
-              {isDetectingOpenRouter && (
-                <span className="text-xs text-indigo-400 font-semibold flex items-center gap-1">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Verifying...
-                </span>
-              )}
-              {openRouterKeyIsValid && !isDetectingOpenRouter && (
-                <span className="text-xs text-emerald-300 bg-emerald-950/60 border border-emerald-800 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Key Verified
-                </span>
-              )}
-            </div>
-            <form onSubmit={(e) => e.preventDefault()}>
-              <input
-                type="password"
-                autoComplete="new-password"
-                value={openRouterApiKey}
-                onChange={handleOpenRouterKeyChange}
-                placeholder="sk-or-... (Used only if Gemini and Groq both fail)"
-                className="w-full bg-slate-900 border border-indigo-800/60 rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:outline-none font-mono"
-              />
-            </form>
-            <p className="text-xs text-indigo-300/80 leading-relaxed">
-              Last-resort fallback. Get a free key at{' '}
-              <a
-                href="https://openrouter.ai/keys"
-                target="_blank"
-                rel="noreferrer"
-                className="font-bold underline text-indigo-300 hover:text-indigo-100"
-              >
-                openrouter.ai/keys
-              </a>
-              .
-            </p>
-          </div>
-
-          {/* 4. HOW IT WORKS INFO BOX */}
-          <div className="border border-dashed border-indigo-500/40 bg-indigo-950/20 rounded-2xl p-4 sm:p-5 text-indigo-200 text-xs sm:text-sm space-y-1.5">
-            <div className="flex items-center gap-2 font-bold text-indigo-300">
-              <Lightbulb className="w-4 h-4 text-amber-400 shrink-0" />
-              <span>How it works</span>
-            </div>
-            <p className="text-indigo-300/90 leading-relaxed pl-6">
-              Gemini is tried first, Groq is used if Gemini fails or is busy, and OpenRouter is the final fallback if both fail. Adding all three keys gives you the most reliable, fastest generations — but only Gemini is required.
-            </p>
-          </div>
-
-          {/* MODEL SELECTION */}
-          <div className="pt-2">
-            <label className="block text-xs sm:text-sm font-semibold text-slate-300 mb-1.5">
-              Primary Gemini Model
-            </label>
-            <select
-              value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm font-medium text-slate-200 focus:ring-2 focus:ring-[#F59E0B] focus:outline-none"
-            >
-              {availableModels.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                </option>
-              ))}
-            </select>
-
-            {autoDetectStatus && (
-              <p className={`text-xs font-bold mt-2 flex items-center gap-1 ${autoDetectStatus.startsWith('Error') ? 'text-red-400' : 'text-emerald-400'}`} style={{ display: autoDetectStatus.startsWith('Error') ? 'flex' : 'none' }}>
-                {autoDetectStatus.startsWith('Error') && <AlertCircle className="w-4 h-4 shrink-0" />}
-                {autoDetectStatus}
-              </p>
-            )}
-          </div>
-        </div>
+        <ApiKeyPanel
+          onApiKeyChange={setCurrentApiKey}
+          onCerebrasApiKeyChange={setCurrentCerebrasApiKey}
+          onOpenAiApiKeyChange={setCurrentOpenAiApiKey}
+          onDeepSeekApiKeyChange={setCurrentDeepSeekApiKey}
+          onSelectedModelChange={setCurrentSelectedModel}
+        />
 
         {/* MAIN FORM */}
         <div className="bg-slate-800/80 rounded-2xl shadow-lg border border-slate-700 p-6 sm:p-10 space-y-8">
@@ -1789,6 +1775,7 @@ export default function Home() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
                 {/* DRAG AND DROP ZONE */}
                 <div 
+                  onClick={handleUploadClick}
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
                   onDrop={handleDrop}
@@ -1805,7 +1792,7 @@ export default function Home() {
                     type="file" 
                     accept=".pdf" 
                     onChange={handleBowFileChange}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" 
+                    className="absolute inset-0 w-full h-full opacity-0 pointer-events-none" 
                   />
                   <div className="flex flex-col items-center justify-center space-y-2 pointer-events-none">
                     {bowFile ? (
@@ -2048,6 +2035,21 @@ export default function Home() {
               </div>
             </div>
 
+            {/* COT Indicators Toggle */}
+            <div className="flex items-center gap-3 p-4 bg-slate-900/60 border border-slate-700 rounded-xl">
+              <input
+                type="checkbox"
+                id="includeCotIndicators"
+                checked={includeCotIndicators}
+                onChange={(e) => setIncludeCotIndicators(e.target.checked)}
+                className="w-4 h-4 rounded bg-slate-900 border-slate-700 text-[#F59E0B] focus:ring-[#F59E0B] cursor-pointer"
+              />
+              <label htmlFor="includeCotIndicators" className="text-sm font-medium text-slate-300 cursor-pointer flex-1">
+                Include COT Indicators in generated lesson plan
+              </label>
+              <Lightbulb className="w-4 h-4 text-amber-400 shrink-0" title="COT (Classroom Observation Tool) indicators are required for DepEd teacher evaluations. When enabled, the AI will automatically embed these indicators throughout the lesson plan." />
+            </div>
+
             <div className="flex gap-4 mt-6">
               <button
                 type="submit"
@@ -2057,7 +2059,7 @@ export default function Home() {
               >
                 {loading ? (
                   <>
-                    <Loader2 className="w-5 h-5 animate-spin text-amber-400" /> Generating Detailed IlawCraft Plan...
+                    <Loader2 className="w-5 h-5 animate-spin text-amber-400" /> {loadingMessage}
                   </>
                 ) : (
                   <>

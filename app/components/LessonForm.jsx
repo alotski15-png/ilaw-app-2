@@ -319,7 +319,7 @@ export default function LessonForm({
 
         <div className="flex gap-3">
           <button type="submit" disabled={loading} className="flex-1 w-full bg-[#1B365D] hover:bg-[#254677] active:bg-[#1B365D] border border-[#F59E0B]/40 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-[#1B365D]/30">
-            {loading ? (<><Loader2 className="w-5 h-5 animate-spin text-amber-400" /> Generating Detailed IlawCraft Plan...</>) : (<><Sparkles className="w-5 h-5 text-amber-400" /> Generate Detailed ILAW Lesson Plan</>)}
+            {loading ? (<><Loader2 className="w-5 h-5 animate-spin text-amber-400" /> Brewing brilliant lesson ideas... ☕✨</>) : (<><Sparkles className="w-5 h-5 text-amber-400" /> Generate Detailed ILAW Lesson Plan</>)}
           </button>
 
           <button type="button" onClick={onCancel} disabled={!loading} className="flex-none bg-red-600 hover:bg-red-700 text-white font-bold py-3.5 px-4 rounded-xl transition">

@@ -16,10 +16,13 @@ export async function POST(req) {
     }
 
     // API keys are needed for AI processing
-    const apiKey = formData.get('apiKey');
-    const groqApiKey = formData.get('groqApiKey');
-    const openRouterApiKey = formData.get('openRouterApiKey');
-    if (!apiKey && !groqApiKey && !openRouterApiKey) {
+    // Check headers first, then fall back to form data
+    const geminiApiKey = req.headers.get('x-gemini-api-key') || formData.get('apiKey') || '';
+    const cerebrasApiKey = req.headers.get('x-cerebras-api-key') || formData.get('cerebrasApiKey') || '';
+    const openAiApiKey = req.headers.get('x-openai-api-key') || formData.get('openAiApiKey') || '';
+    const deepSeekApiKey = req.headers.get('x-deepseek-api-key') || formData.get('deepSeekApiKey') || '';
+    const selectedModel = req.headers.get('x-selected-model') || formData.get('selectedModel') || '';
+    if (!geminiApiKey && !cerebrasApiKey && !openAiApiKey && !deepSeekApiKey) {
       return NextResponse.json({ error: 'No valid API keys were provided.' }, { status: 400 });
     }
 
@@ -56,13 +59,14 @@ JSON SCHEMA:
 }
 `;
 
-    // Build pipeline using all available providers (Gemini, Groq, OpenRouter).
-    // The recent Gemini model (gemini-3.1-pro-preview) gets a dedicated 10-loop retry.
-    // While the recent model is generating/retrying, all other models run concurrently.
+    // Build pipeline using all available providers (Gemini, DeepSeek, Cerebras, OpenAI).
+    // DeepSeek (FREE, 64K tokens) is prioritized over Cerebras and OpenAI.
     const pipeline = buildAllProvidersBowPipeline({
-      geminiApiKey: apiKey,
-      groqApiKey,
-      openRouterApiKey,
+      geminiApiKey,
+      cerebrasApiKey,
+      openAiApiKey,
+      deepSeekApiKey,
+      selectedModel,
       prompt,
       timeout: 15000,
       maxOutputTokens: 500,
@@ -77,7 +81,7 @@ JSON SCHEMA:
       return hasTerms || hasWeeks;
     };
 
-    const result = await runConcurrentPipeline(pipeline, { isValid, maxRetries: 10 });
+    const result = await runConcurrentPipeline(pipeline, { isValid, maxRetries: 10, skipQualityCheck: true });
 
     if (!result) {
       return NextResponse.json({ error: 'AI failed to process the document after multiple attempts with different models.' }, { status: 500 });

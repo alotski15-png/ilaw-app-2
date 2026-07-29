@@ -8,9 +8,12 @@ export async function POST(req) {
   try {
     const formData = await req.formData();
 
-    const apiKey = formData.get('apiKey');
-    const groqApiKey = formData.get('groqApiKey');
-    const openRouterApiKey = formData.get('openRouterApiKey');
+    // Check headers first, then fall back to form data
+    const geminiApiKey = req.headers.get('x-gemini-api-key') || formData.get('apiKey') || '';
+    const cerebrasApiKey = req.headers.get('x-cerebras-api-key') || formData.get('cerebrasApiKey') || '';
+    const openAiApiKey = req.headers.get('x-openai-api-key') || formData.get('openAiApiKey') || '';
+    const deepSeekApiKey = req.headers.get('x-deepseek-api-key') || formData.get('deepSeekApiKey') || '';
+    const selectedModel = req.headers.get('x-selected-model') || formData.get('selectedModel') || '';
     const term = formData.get('term') || 'Term 1';
     const week = formData.get('week') || 'Week 5';
     const subject = formData.get('subject') || '';
@@ -23,7 +26,7 @@ export async function POST(req) {
       );
     }
 
-    if (!apiKey && !groqApiKey && !openRouterApiKey) {
+    if (!geminiApiKey && !cerebrasApiKey && !openAiApiKey && !deepSeekApiKey) {
       return NextResponse.json(
         { error: 'No valid API keys were provided.' },
         { status: 400 }
@@ -72,8 +75,12 @@ PARTITIONING LOGIC & RULES:
 3. **Strict Non-Overlap Guarantee**:
    - If the user selects Week 5, do NOT include problem-solving or multi-variable competencies intended for Week 6.
    - If the user selects Week 6, do NOT include the basic illustration or foundational single-variable items assigned to Week 5.
-4. **Aligned Content & Performance Standards**:
-   - Extract only the standards under ${term} that directly align with the specific competencies isolated for **${week}**.
+4. **CRITICAL: Standards Must Match Only the Isolated Competency (NOT the Entire Term)**:
+   - Look at the Content Standard and Performance Standard written directly above or adjacent to the specific learning competency/ies isolated for **${week}**.
+   - Extract ONLY the Content Standard and Performance Standard that directly governs that specific learning competency.
+   - DO NOT list the entire Content Standard or Performance Standard for the whole Term. Only the sentence or phrase that directly applies to the isolated competency.
+   - If the document has a single Content Standard for the whole term, extract only the relevant portion/clause that covers the isolated competency, not the full multi-sentence standard.
+   - Example: If the Term's Content Standard is "Demonstrates understanding of... quadratic equations, quadratic inequalities, and linear inequalities" but Week 5 only covers "quadratic inequalities", then output only the part about "quadratic inequalities".
 5. **CRITICAL BULLET FORMATTING RULE**:
    - If there are MULTIPLE learning competencies, content standards, or performance standards, DO NOT join them with commas or write them as a single continuous sentence.
    - Separate every distinct item into a markdown bullet point starting with a dash (e.g., "- First item\\n- Second item").
@@ -90,13 +97,14 @@ JSON SCHEMA:
 }
 `;
 
-    // Build pipeline using all available providers (Gemini, Groq, OpenRouter).
-    // The recent Gemini model (gemini-3.1-pro-preview) gets a dedicated 10-loop retry.
-    // While the recent model is generating/retrying, all other models run concurrently.
+    // Build pipeline using all available providers (Gemini, DeepSeek, Cerebras, OpenAI).
+    // DeepSeek (FREE, 64K tokens) is prioritized over Cerebras and OpenAI.
     const pipeline = buildAllProvidersBowPipeline({
-      geminiApiKey: apiKey,
-      groqApiKey,
-      openRouterApiKey,
+      geminiApiKey,
+      cerebrasApiKey,
+      openAiApiKey,
+      deepSeekApiKey,
+      selectedModel,
       prompt,
       timeout: 12000,
       maxOutputTokens: 2000,
@@ -113,7 +121,7 @@ JSON SCHEMA:
       );
     };
 
-    const result = await runConcurrentPipeline(pipeline, { isValid, maxRetries: 10 });
+    const result = await runConcurrentPipeline(pipeline, { isValid, maxRetries: 10, skipQualityCheck: true });
 
     if (!result) {
       return NextResponse.json(
