@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { showToast } from './components/Toast';
 import { 
   Sparkles, 
   Loader2, 
@@ -30,9 +31,29 @@ import {
   HeadingLevel,
   ShadingType,
   PageOrientation,
-  BorderStyle
+  BorderStyle,
+  VerticalAlign,
+  HeightRule
 } from 'docx';
 import { saveAs } from 'file-saver';
+import ApiKeyInstructionsModal from './components/ApiKeyInstructionsModal';
+import {
+  buildHeaderTable,
+  buildSessionTable,
+  buildStandardsTable,
+  buildSignatoriesTable,
+  createSectionTitleBanner,
+  createCell,
+  createBorderSet,
+  formatDocxText,
+  TEMPLATE_BORDER_COLOR_HEADER,
+  TEMPLATE_BORDER_COLOR_MATRIX,
+  TEMPLATE_HEADER_CELL_MARGINS,
+  TEMPLATE_MATRIX_CELL_MARGINS,
+  TEMPLATE_BANNER_CELL_MARGINS,
+  TEMPLATE_TABLE_CELL_MARGINS,
+  TEMPLATE_BORDER_SIZE,
+} from '../lib/docx-helpers';
 
 // Custom Minimalist Glowing Oil Lamp Logo with Flame-Book & AI Star
 const IlawLogo = ({ className = "w-10 h-10" }) => (
@@ -132,33 +153,6 @@ const hasMissingDesignation = (input) => {
   return parts.length < 2 || !parts[1].trim();
 };
 
-const formatDocxText = (content) => {
-  if (content === null || content === undefined) return '';
-  if (typeof content === 'string') {
-    let trimmed = content.trim();
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (Array.isArray(parsed)) return parsed.join('\n');
-      } catch (e) {}
-    }
-    return trimmed
-      .replace(/###\s*/g, '')
-      .replace(/\*\*(.*?)\*\*/g, '$1')
-      .replace(/^[\s-]*\*\*/gm, '')
-      .replace(/^- /gm, '');
-  }
-  if (Array.isArray(content)) {
-    return content.map(item => typeof item === 'object' ? formatDocxText(item) : String(item).replace(/^•\s*/, '')).join('\n');
-  }
-  if (typeof content === 'object') {
-    return Object.entries(content)
-      .map(([k, v]) => `${k.replace(/([A-Z])/g, ' $1')}: ${formatDocxText(v)}`)
-      .join('\n');
-  }
-  return String(content);
-};
-
 const renderBoldText = (text) => {
   const parts = text.split(/(\*\*.*?\*\*)/g);
   return parts.map((part, pIdx) => {
@@ -193,12 +187,24 @@ const formatFormattedText = (text) => {
     }
 
     cleanLine = cleanLine.replace(/^[-*•]\s*/, '');
+    const colonIndex = cleanLine.indexOf(':');
 
-    elements.push(
-      <div key={`text-${idx}`} className="my-0.5 leading-relaxed">
-        {renderBoldText(cleanLine)}
-      </div>
-    );
+    if (colonIndex > 0 && colonIndex < 60) { // Heuristic for a label
+      const label = cleanLine.substring(0, colonIndex + 1);
+      const value = cleanLine.substring(colonIndex + 1);
+      elements.push(
+        <div key={`text-${idx}`} className="my-0.5 leading-relaxed">
+          <strong className="font-bold text-slate-900">{label.replace(/\*/g, '')}</strong>
+          {renderBoldText(value)}
+        </div>
+      );
+    } else {
+      elements.push(
+        <div key={`text-${idx}`} className="my-0.5 leading-relaxed">
+          {renderBoldText(cleanLine)}
+        </div>
+      );
+    }
   });
 
   return elements;
@@ -281,6 +287,7 @@ const toRoman = (num) => {
 
 
 export default function Home() {
+  const [instructionModalProvider, setInstructionModalProvider] = useState(null);
   const [apiKey, setApiKey] = useState('');
   const [groqApiKey, setGroqApiKey] = useState('');
   const [openRouterApiKey, setOpenRouterApiKey] = useState('');
@@ -601,7 +608,7 @@ export default function Home() {
       setBowFile(file);
       setBowFileName(file.name);
     } else if (file) {
-      alert('Please upload a valid PDF file.');
+      showToast({ message: 'Please upload a valid PDF file.', type: 'error' });
     }
   };
 
@@ -646,7 +653,7 @@ export default function Home() {
 
   const handleLoadEntries = async () => {
     if (!apiKey && !groqApiKey && !openRouterApiKey) {
-      alert('Please enter an API Key in the API Configuration section.');
+      showToast({ message: 'Please enter an API Key in the API Configuration section.', type: 'error' });
       return;
     }
 
@@ -691,7 +698,7 @@ export default function Home() {
 
       setExtractionNote(`Extracted and isolated standards for ${formData.week} successfully!`);
     } catch (err) {
-      alert(`Extraction failed: ${err.message}`);
+      showToast({ message: `Extraction failed: ${err.message}`, type: 'error' });
     } finally {
       setIsExtracting(false);
     }
@@ -701,7 +708,7 @@ export default function Home() {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       setLoading(false); // Manually set loading to false on abort
-      alert('Lesson plan generation aborted.');
+      showToast({ message: 'Lesson plan generation aborted.', type: 'info' });
     }
   };
 
@@ -782,7 +789,7 @@ export default function Home() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!apiKey && !groqApiKey && !openRouterApiKey) {
-      alert('Please enter an API Key in the API Configuration section above.');
+      showToast({ message: 'Please enter an API Key in the API Configuration section above.', type: 'error' });
       return;
     }
 
@@ -791,7 +798,7 @@ export default function Home() {
       hasMissingDesignation(formData.masterTeacherName) ||
       hasMissingDesignation(formData.principalName)
     ) {
-      alert('Please include designations for all filled signatory fields (formatted as Name, Designation).');
+      showToast({ message: 'Please include designations for all filled signatory fields (formatted as Name, Designation).', type: 'error' });
       return;
     }
 
@@ -914,7 +921,7 @@ export default function Home() {
       if (err.name === 'AbortError') {
         console.log('Fetch aborted by user.');
       } else {
-        alert(err.message);
+        showToast({ message: err.message, type: 'error' });
       }
     } finally {
       setLoading(false);
@@ -942,68 +949,8 @@ export default function Home() {
   const masterTeacherSignatory = parseNameAndDesignation(snapshotData?.masterTeacherName, lessonPlan?.signatories?.checkedBy, '');
   const principalSignatory = parseNameAndDesignation(snapshotData?.principalName, lessonPlan?.signatories?.notedBy, '');
 
-  // ILAW Template Formatting Constants (extracted from ILAW clumnar blank.docx)
-  const TEMPLATE_BORDER_COLOR_HEADER = 'D1D5DB';
-  const TEMPLATE_BORDER_COLOR_MATRIX = '4B5563';
-  const TEMPLATE_LABEL_FILL = 'F3F4F6';
-  const TEMPLATE_BANNER_FILL = 'D1D5DB';
-  const TEMPLATE_HEADER_CELL_MARGINS = { top: 100, left: 100, bottom: 100, right: 100 };
-  const TEMPLATE_MATRIX_CELL_MARGINS = { top: 120, left: 120, bottom: 120, right: 120 };
-  const TEMPLATE_BANNER_CELL_MARGINS = { top: 200, left: 120, bottom: 200, right: 120 };
-  const TEMPLATE_TABLE_CELL_MARGINS = { top: 15, left: 15, bottom: 15, right: 15 };
-  const TEMPLATE_BORDER_SIZE = 8;
-
-  const createBorderSet = (color) => ({
-    top: { val: BorderStyle.SINGLE, size: TEMPLATE_BORDER_SIZE, space: 0, color: color },
-    left: { val: BorderStyle.SINGLE, size: TEMPLATE_BORDER_SIZE, space: 0, color: color },
-    bottom: { val: BorderStyle.SINGLE, size: TEMPLATE_BORDER_SIZE, space: 0, color: color },
-    right: { val: BorderStyle.SINGLE, size: TEMPLATE_BORDER_SIZE, space: 0, color: color },
-  });
-
-  // Helper for Cell Generation in DOCX — matches ILAW clumnar blank.docx template
-  const createCell = useCallback((text, options = {}) => {
-    const {
-      fill,
-      bold,
-      color = '333333',
-      widthPct = null,
-      colSpan = 1,
-      italic = false,
-      borderColor = TEMPLATE_BORDER_COLOR_HEADER,
-      cellMargins = TEMPLATE_HEADER_CELL_MARGINS,
-      alignment = AlignmentType.LEFT,
-      fontSize = 20,
-    } = options;
-
-    const paragraphs = String(text || '').split('\n').map(line =>
-      new Paragraph({
-        alignment,
-        spacing: { line: 276, after: 0, before: 0 },
-        children: [
-          new TextRun({
-            text: line,
-            bold: !!bold,
-            italic: !!italic,
-            color: color,
-            size: fontSize,
-            font: 'Arial',
-          }),
-        ],
-      })
-    );
-
-    return new TableCell({
-      columnSpan: colSpan > 1 ? colSpan : undefined,
-      width: widthPct ? { size: widthPct, type: WidthType.PERCENTAGE } : undefined,
-      shading: fill ? { fill: fill, type: ShadingType.CLEAR } : undefined,
-      margins: cellMargins,
-      borders: createBorderSet(borderColor),
-      children: paragraphs.length > 0 ? paragraphs : [new Paragraph({ children: [new TextRun({ text: '', font: 'Arial', size: 20 })] })],
-    });
-  }, []);
-
   // Matrix Landscape DOCX Download
-  const handleDownloadDocx = useCallback(async () => {
+  const handleDownloadDocx = async () => {
     if (!lessonPlan) return;
     setDownloadingDocx(true);
 
@@ -1011,7 +958,7 @@ export default function Home() {
       const titleText = `LESSON PLAN TEMPLATE FOR ${(snapshotData?.subject || 'SUBJECT').toUpperCase()} ${(snapshotData?.term || '').toUpperCase()} ${(snapshotData?.week || '').toUpperCase()}`;
       
       const tableSubHeaderStyle = { fill: "4B5563", color: "FFFFFF", bold: true };
-      const tableLabelStyle = { fill: TEMPLATE_LABEL_FILL, color: "1B365D", bold: true };
+      const tableLabelStyle = { color: "1B365D", bold: true };
 
       const headerTable = new Table({
         width: { size: 100, type: WidthType.PERCENTAGE },
@@ -1056,14 +1003,15 @@ export default function Home() {
 
         const dataRows = rowsData.map(row => {
           return new TableRow({
+            height: row.height, // Pass height directly to TableRow
             children: [
               createCell(row.label, { ...tableLabelStyle, borderColor: TEMPLATE_BORDER_COLOR_MATRIX, cellMargins: TEMPLATE_MATRIX_CELL_MARGINS }),
-              ...sessionHeaders.map((_, idx) => createCell(row.getValue(idx), { borderColor: TEMPLATE_BORDER_COLOR_MATRIX, cellMargins: TEMPLATE_MATRIX_CELL_MARGINS }))
+              ...sessionHeaders.map((_, idx) => createCell(row.getValue(idx), { borderColor: TEMPLATE_BORDER_COLOR_MATRIX, cellMargins: TEMPLATE_MATRIX_CELL_MARGINS, minHeight: row.minHeight }))
             ]
           });
         });
 
-        return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, tableCellMar: TEMPLATE_TABLE_CELL_MARGINS, rows: [headerRow, ...dataRows] });
+                return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, tableCellMar: TEMPLATE_TABLE_CELL_MARGINS, rows: [headerRow, ...dataRows], borders: createBorderSet(TEMPLATE_BORDER_COLOR_MATRIX) });
       };
 
       const intentionsTable = createMatrixTable([
@@ -1116,7 +1064,8 @@ export default function Home() {
         },
         {
           label: "Reflections",
-          getValue: () => "\n\n\n\n\n\n"
+          getValue: () => "", // Make it blank
+          height: { value: 2835, rule: 'exact' }
         }
       ]);
 
@@ -1200,14 +1149,14 @@ export default function Home() {
       saveAs(blob, `${subjectName}_${termName}_${weekName}_Matrix.docx`);
     } catch (err) {
       console.error('Error exporting DOCX:', err);
-      alert('Failed to generate Word document.');
+      showToast({ message: 'Failed to generate Word document.', type: 'error' });
     } finally {
       setDownloadingDocx(false);
     }
-  }, [lessonPlan, snapshotData, numSessions, sessionHeaders, teacherSignatory, masterTeacherSignatory, principalSignatory, createCell]);
+  };
 
   // Separated Daily Lesson Plans DOCX Download
-  const handleDownloadSeparatedDocx = useCallback(async () => {
+  const handleDownloadSeparatedDocx = async () => {
     if (!lessonPlan) return;
     setDownloadingSeparatedDocx(true);
 
@@ -1221,180 +1170,15 @@ export default function Home() {
 
       for (let idx = 0; idx < numSessions; idx++) {
         const sessionLabel = `Session ${idx + 1} of ${numSessions}`;
-        
-        const sessionObj = lessonPlan.sessions?.[idx] || {};
-        const objectives = formatDocxText(sessionObj.learningObjectives || (Array.isArray(lessonPlan.learningObjectives) ? lessonPlan.learningObjectives[idx] : lessonPlan.learningObjectives));
-        const context = formatDocxText(sessionObj.learnerContext || (Array.isArray(lessonPlan.learnerContext) ? lessonPlan.learnerContext[idx] : lessonPlan.learnerContext) || snapshotData?.learnerContext);
-        const preLesson = formatDocxText(sessionObj.preLesson || (Array.isArray(lessonPlan.learningExperience?.preLesson) ? lessonPlan.learningExperience.preLesson[idx] : lessonPlan.learningExperience?.preLesson));
-        const flow = formatDocxText(sessionObj.flow || (Array.isArray(lessonPlan.learningExperience?.flow) ? lessonPlan.learningExperience.flow[idx] : lessonPlan.learningExperience?.flow));
-        const resources = formatDocxText(sessionObj.learningResources || (Array.isArray(lessonPlan.learningResources) ? lessonPlan.learningResources[idx] : lessonPlan.learningResources) || snapshotData?.resources);
-        const integration = formatDocxText(sessionObj.opportunitiesForIntegration || (Array.isArray(lessonPlan.opportunitiesForIntegration) ? lessonPlan.opportunitiesForIntegration[idx] : lessonPlan.opportunitiesForIntegration));
-        
-        const assessData = sessionObj.formativeAssessment || 
-          (Array.isArray(lessonPlan?.assessingLearning?.formativeAssessment) 
-             ? lessonPlan.assessingLearning.formativeAssessment[idx] 
-             : lessonPlan?.assessingLearning?.formativeAssessment);
-        const assessment = formatDocxText(assessData);
 
-        const extended = formatDocxText(sessionObj.extendedLearning || (Array.isArray(lessonPlan.waysForward?.extendedLearningOpportunities) ? lessonPlan.waysForward.extendedLearningOpportunities[idx] : lessonPlan.waysForward?.extendedLearningOpportunities));
-
-        const sessionTable = new Table({
-          width: { size: 100, type: WidthType.PERCENTAGE },
-          tableCellMar: TEMPLATE_TABLE_CELL_MARGINS,
-          rows: [
-            new TableRow({
-              children: [
-                createCell(`LESSON PLAN (${sessionLabel.toUpperCase()})\n(based on the ILAW FRAMEWORK)`, { ...headerBannerStyle, fill: headerBannerStyle.fill, colSpan: 4, widthPct: 100, borderColor: matrixBorder, cellMargins: TEMPLATE_BANNER_CELL_MARGINS })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Learning Area:", { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(formatDocxText(lessonPlan.header?.learningArea || snapshotData?.subject), { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Name of Teachers:", { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(formatDocxText(getOnlyName(lessonPlan.header?.teacherName || snapshotData?.teacherName)), { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Grade level & Section:", { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(formatDocxText(lessonPlan.header?.gradeLevelSection || snapshotData?.gradeAndSection), { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("No. of Sessions:", { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(`${snapshotData?.noOfSessions || ''} (${sessionLabel})`, { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("References:\nbooks, websites, toolkits, etc.", { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(formatDocxText(lessonPlan.header?.references || snapshotData?.references), { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Declaration of AI Use:\nCite how AI was used in the formulation of the lesson plan.\nSee DO no. 3 s. 2026", { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(formatDocxText(lessonPlan.header?.declarationOfAiUse || `Consistent with policy guidelines on AI in basic education...`), { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Intentions:", { ...headerBannerStyle, fill: headerBannerStyle.fill, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell("Meaningful learning experiences are anchored in how we frame them. Start by deciding what you want learners to master by the end of the lesson – keep it clear and simple.\nRemember: Understanding your learner’s evolving context and designing around that your lessons connect with and are relevant to them.", { colSpan: 3, widthPct: 75, fill: "F8FAFC", borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Learning Competency &\nCurriculum Standards:\nWrite the competency/ies from the curriculum that we are targeting, and the content or performance standards applicable to the sessions.", { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(
-                  `Content Standard:\n${formatDocxText(lessonPlan.curriculumStandards?.contentStandard || snapshotData?.contentStandards)}\n\n` +
-                  `Performance Standard:\n${formatDocxText(lessonPlan.curriculumStandards?.performanceStandard || snapshotData?.performanceStandards)}\n\n` +
-                  `Learning Competency:\n${formatDocxText(lessonPlan.curriculumStandards?.learningCompetency || snapshotData?.learningCompetency)}`,
-                  { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins }
-                )
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Learning Objectives:\nWrite the smaller knowledge, skills, or tasks from the competency that the learners will work on and be able to show by the end of the sessions.", { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(objectives, { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Learner Context:\nWrite your observation of your learners, and how they have been performing or responding to learning experiences recently. Include strengths, interests, and possible barriers to learning.", { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(context, { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Learning Experience", { ...headerBannerStyle, fill: headerBannerStyle.fill, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell("A learning experience is like a thoughtfully designed journey. Each activity and interaction builds towards meaningful understanding and growth. Identify activities and interactions to help learners gain knowledge, skills, and understanding in a purposeful and coherent way.", { colSpan: 3, widthPct: 75, fill: "F8FAFC", borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Pre-Lesson:\nDescribe how you will help the learners get ready with the lesson", { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(preLesson, { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell(
-                  "Flow:\nDescribe the activities that you can implement in 1 or more sessions to meet your intentions.\nApply the Learning Design Principles, use the prompts below as a guide. Note, not all principles are expected in every lesson.\n" +
-                  "• make the objectives clear\n• guide learners before letting them try the task on their own\n• check the state of the learner’s well-being, understanding, and mastery over the lesson\n" +
-                  "• connect today’s new concepts to past competencies\n• encourage collaboration among learners\n• invite learners to reflect on why this matters to them\n" +
-                  "• ensure inclusion for learner’s varied abilities, learning styles, and contexts",
-                  { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }
-                ),
-                createCell(flow, { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Learning Resources:\nList down the learning resources that will help you reach your objectives. Ensure that they are available and inclusive.\nInclude options and alternatives in case of emergencies", { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(resources, { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Opportunities for Integration and Contextualization:\nWrite down any possibilities to meaningfully connect to another learning area, special topic, local context, or technology. Write N/A if none.", { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(integration, { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Assessing Learning", { ...headerBannerStyle, fill: headerBannerStyle.fill, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell("Assessment reveals what learners have gained and what they still need help with. These are helpful in providing you with information to guide your future instruction throughout the entire session.", { colSpan: 3, widthPct: 75, fill: "F8FAFC", borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell(
-                  "Formative Assessment:\nCreate a task, activity, or questions to assess learning and provide feedback every now and then. Include ways for learners to ask for guidance or support throughout each session.\n" +
-                  "Remember to provide appropriate accommodations so all learners can demonstrate their understanding (e.g., varied response formats, small group options, visual or auditory supports)",
-                  { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }
-                ),
-                createCell(assessment, { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Ways Forward", { ...headerBannerStyle, fill: headerBannerStyle.fill, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell("Meaningful learning can also happen beyond the classroom – for both the learners and the teacher.\nPause and reflect on what happened today.", { colSpan: 3, widthPct: 75, fill: "F8FAFC", borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell("Extended Learning Opportunities:\nSuggest other learning experiences outside the classroom/class hours that learners may want to access to reinforce what they have learned, to spark their curiosities further, or that may provide them support in their areas of difficulty.", { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(extended, { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell(
-                  "Reflections:\nThink about what you need to change for the next session based on what happened today. Is there something the learners are interested in exploring?\n" +
-                  "Are there some things you would like to share with your co-teachers, parents, or school leaders about your classroom experience? What would you like your instructional coach to help you with?\n" +
-                  "Reflections may be written in brief notes, bullets, or annotations.",
-                  { bold: true, widthPct: 25, borderColor: matrixBorder, cellMargins: matrixMargins }
-                ),
-                createCell("\n\n\n\n\n\n", { colSpan: 3, widthPct: 75, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            }),
-            new TableRow({
-              children: [
-                createCell(`Prepared by:\n\n\n${teacherSignatory.name || ''}\n${teacherSignatory.designation || 'Teacher'}`, { widthPct: 33, colSpan: 1, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(`Checked and Reviewed:\n\n\n${masterTeacherSignatory.name || ''}\n${masterTeacherSignatory.designation || 'Master Teacher'}`, { widthPct: 33, colSpan: 1, borderColor: matrixBorder, cellMargins: matrixMargins }),
-                createCell(`Noted by:\n\n\n${principalSignatory.name || ''}\n${principalSignatory.designation || 'School Head'}`, { widthPct: 34, colSpan: 2, borderColor: matrixBorder, cellMargins: matrixMargins })
-              ]
-            })
-          ]
+        const sessionTable = buildSessionTable({
+          lessonPlan,
+          snapshotData,
+          sessionIndex: idx,
+          sessionLabel,
+          headerBannerStyle: { color: '333333', bold: true },
+          matrixBorder: TEMPLATE_BORDER_COLOR_MATRIX,
+          matrixMargins: TEMPLATE_MATRIX_CELL_MARGINS,
         });
 
         sections.push({
@@ -1406,7 +1190,8 @@ export default function Home() {
             }
           },
           children: [
-            sessionTable
+            sessionTable,
+            buildSignatoriesTable({ teacherSignatory, masterTeacherSignatory, principalSignatory })
           ]
         });
       }
@@ -1424,11 +1209,11 @@ export default function Home() {
       saveAs(blob, `${subjectName}_${termName}_${weekName}_Daily_Separated.docx`);
     } catch (err) {
       console.error('Error exporting Separated DOCX:', err);
-      alert('Failed to generate separated daily lesson plans.');
+      showToast({ message: 'Failed to generate separated daily lesson plans.', type: 'error' });
     } finally {
       setDownloadingSeparatedDocx(false);
     }
-  }, [lessonPlan, snapshotData, numSessions, teacherSignatory, masterTeacherSignatory, principalSignatory, createCell]);
+  };
 
   return (
     <div className="min-h-screen bg-slate-900 py-12 px-4 font-sans text-slate-200">
@@ -1497,7 +1282,7 @@ export default function Home() {
             </button>
             
             <div className="flex items-center gap-3 border-b border-slate-700 pb-3">
-              <HeartHandshake className="w-6 h-6 text-[#F59E0B] shrink-0" />
+              <IlawLogo className="w-10 h-10 shrink-0" />
               <h2 className="text-xl font-bold text-white">Support IlawCraft</h2>
             </div>
 
@@ -1519,6 +1304,16 @@ export default function Home() {
                 </button>
               </div>
             </div>
+
+            <div className="flex flex-col items-center gap-2">
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Or scan to pay</div>
+              <img
+                src="/qr code gcash.jpg"
+                alt="GCash QR Code"
+                className="w-40 h-40 object-contain bg-white rounded-lg p-1 border border-slate-700"
+              />
+            </div>
+
 
             <button
               type="button"
@@ -2070,17 +1865,17 @@ export default function Home() {
                     )}
                   </button>
                 )}
+
+                {extractionNote && (
+                  <div className="bg-amber-950/30 border border-amber-800/40 rounded-md p-3 text-xs text-amber-300 flex items-start gap-2">
+                    <Info className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                    <div>
+                      <span className="font-bold">AI Scope Adjustment Notice:</span> {extractionNote}
+                    </div>
+                  </div>
+                )}
                 </div>
               </div>
-
-              {extractionNote && (
-                <div className="bg-amber-950/30 border border-amber-800/40 rounded-md p-3 text-xs text-amber-300 flex items-start gap-2">
-                  <Info className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
-                  <div>
-                    <span className="font-bold">AI Scope Adjustment Notice:</span> {extractionNote}
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* Competencies */}
@@ -2253,10 +2048,11 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="flex gap-4">
+            <div className="flex gap-4 mt-6">
               <button
                 type="submit"
                 disabled={loading}
+
                 className="flex-1 bg-[#1B365D] hover:bg-[#254677] active:bg-[#1B365D] border border-[#F59E0B]/40 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-[#1B365D]/30"
               >
                 {loading ? (
@@ -2276,7 +2072,10 @@ export default function Home() {
                 disabled={!loading}
                 className="flex-none bg-red-700 hover:bg-red-600 active:bg-red-700 border border-red-500/40 disabled:opacity-50 text-white font-bold py-3.5 px-6 rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-red-700/30"
               >
-                <X className="w-5 h-5" /> Abort
+                <span className="flex items-center gap-2">
+                  <X className="w-5 h-5" />
+                  Abort
+                </span>
               </button>
             </div>
           </form>
@@ -2489,13 +2288,15 @@ export default function Home() {
                             <td key={idx} className="p-2 border border-slate-400 align-top">{renderSafeContent(lessonPlan.sessions?.[idx]?.extendedLearning)}</td>
                           ))}
                         </tr>
+
                         {/* Reflections Row */}
-                        <tr>
+                        <tr className="h-32">
                           <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D]">Reflections</td>
                           {sessionHeaders.map((_, idx) => (
-                            <td key={idx} className="p-2 border border-slate-400 align-top">{renderSafeContent(lessonPlan.sessions?.[idx]?.reflections || '\n\n\n\n\n\n')}</td>
+                            <td key={idx} className="p-2 border border-slate-400 align-top">{''}</td>
                           ))}
                         </tr>
+
                       </tbody>
                     </table>
                   </div>
@@ -2524,6 +2325,43 @@ export default function Home() {
                   </table>
                 </>
               )}
+            </div>
+          )}
+          {/* Download Buttons for Generated Lesson Plan */}
+          {lessonPlan && !lessonPlan.rawText && (
+            <div className="flex flex-col sm:flex-row gap-4 justify-center mt-6">
+              <button
+                type="button"
+                onClick={handleDownloadDocx}
+                disabled={downloadingDocx}
+                className="flex-1 sm:flex-none bg-[#1B365D] hover:bg-[#254677] active:bg-[#1B365D] border border-[#F59E0B]/40 disabled:opacity-50 text-white font-bold py-3.5 px-6 rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-[#1B365D]/30"
+              >
+                {downloadingDocx ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin text-amber-400" /> Preparing Matrix DOCX...
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-5 h-5 text-amber-400" /> Download Matrix DOCX
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadSeparatedDocx}
+                disabled={downloadingSeparatedDocx}
+                className="flex-1 sm:flex-none bg-[#1B365D] hover:bg-[#254677] active:bg-[#1B365D] border border-[#F59E0B]/40 disabled:opacity-50 text-white font-bold py-3.5 px-6 rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-[#1B365D]/30"
+              >
+                {downloadingSeparatedDocx ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin text-amber-400" /> Preparing Separated DOCX...
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-5 h-5 text-amber-400" /> Download Separated DOCX
+                  </>
+                )}
+              </button>
             </div>
           )}
         </div>

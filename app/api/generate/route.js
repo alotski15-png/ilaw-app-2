@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import { buildLessonPlanPipeline, runLessonPlanPipeline } from '@/lib/ai-providers';
 import { getEphemeralKeys } from '@/lib/ephemeral-keys';
 import { z } from 'zod';
-import { incrementMetric } from '@/lib/metrics';
 
 // Zod schema for validating AI-generated lesson plans
 const SessionSchema = z.object({
@@ -306,12 +305,7 @@ REQUIRED JSON STRUCTURE
     if (!parsed.success) {
       console.error('Validation failed for AI response:', parsed.error.format());
       // increment Redis-backed metrics for monitoring
-      try {
-        await incrementMetric('validation_failures');
-        await incrementMetric(`validation_failures:provider:${result.provider || 'unknown'}`);
-      } catch (e) {
-        console.error('Failed to record validation metric', e);
-      }
+
       return NextResponse.json(
         {
           error: 'AI response validation failed',

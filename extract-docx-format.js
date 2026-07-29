@@ -1,6 +1,6 @@
 const fs = require('fs');
 const PizZip = require('pizzip');
-const docxPath = 'e:/OneDrive/OneDrive - Department of Education/2026-2027/LP/Term 1/Math 10/ILAW clumnar blank.docx';
+const docxPath = 'public/LESSON-PLAN-guide.docx';
 
 try {
   const data = fs.readFileSync(docxPath, 'binary');

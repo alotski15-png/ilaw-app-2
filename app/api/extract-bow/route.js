@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import pdfParse from 'pdf-parse-fork';
-import { buildBowPipeline, runConcurrentPipeline } from '@/lib/ai-providers';
+import { buildAllProvidersBowPipeline, runConcurrentPipeline } from '@/lib/ai-providers';
 
 export const runtime = 'nodejs';
 
@@ -90,11 +90,13 @@ JSON SCHEMA:
 }
 `;
 
-    // Build pipeline using all Gemini models except 3.6 and 3.5.
-    // The recent model (gemini-3.1-pro-preview) gets a dedicated 10-loop retry.
-    // While the recent model is generating/retrying, other models run concurrently.
-    const pipeline = buildBowPipeline({
+    // Build pipeline using all available providers (Gemini, Groq, OpenRouter).
+    // The recent Gemini model (gemini-3.1-pro-preview) gets a dedicated 10-loop retry.
+    // While the recent model is generating/retrying, all other models run concurrently.
+    const pipeline = buildAllProvidersBowPipeline({
       geminiApiKey: apiKey,
+      groqApiKey,
+      openRouterApiKey,
       prompt,
       timeout: 12000,
       maxOutputTokens: 2000,

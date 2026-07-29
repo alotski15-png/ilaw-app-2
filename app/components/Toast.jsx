@@ -1,3 +1,5 @@
+'use client';
+
 import React, { useEffect, useState } from 'react';
 
 export function showToast({ message = '', type = 'info', duration = 4000 } = {}) {
