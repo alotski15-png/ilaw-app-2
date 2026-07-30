@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { mapIndicatorToOrdinal } from '../lib/cot-indicators';
 import { showToast } from './components/Toast';
 import { 
   Sparkles, 
@@ -16,17 +17,15 @@ import {
   Check, 
   ShieldCheck,
   UploadCloud,
-  Lightbulb
+  Lightbulb,
+  Presentation
 } from 'lucide-react';
 
 import ApiKeyInstructionsModal from './components/ApiKeyInstructionsModal';
 import ApiKeyPanel from './components/ApiKeyPanel'; // Import the ApiKeyPanel component
 import {
-  buildHeaderTable,
   buildSessionTable,
-  buildStandardsTable,
   buildSignatoriesTable,
-  createSectionTitleBanner,
   createCell,
   createBorderSet,
   formatDocxText,
@@ -121,7 +120,13 @@ const hasMissingDesignation = (input) => {
 };
 
 const renderBoldText = (text) => {
-  const parts = text.split(/(\*\*.*?\*\*)/g);
+  if (typeof text !== 'string') return text;
+
+  const cleaned = text
+    .replace(/^\*\s*/gm, '')
+    .replace(/^[\-*•]\s*/gm, '');
+
+  const parts = cleaned.split(/(\*\*.*?\*\*)/g);
   return parts.map((part, pIdx) => {
     if (part.startsWith('**') && part.endsWith('**')) {
       const innerText = part.slice(2, -2);
@@ -132,7 +137,7 @@ const renderBoldText = (text) => {
         </strong>
       );
     }
-    return part;
+    return part.replace(/\*\s*/g, '');
   });
 };
 
@@ -156,21 +161,68 @@ const formatFormattedText = (text) => {
     }
 
     cleanLine = cleanLine.replace(/^[-*•]\s*/, '');
+    cleanLine = cleanLine.replace(/^\*+/g, '');
     const colonIndex = cleanLine.indexOf(':');
 
     if (colonIndex > 0 && colonIndex < 60) { // Heuristic for a label
       const label = cleanLine.substring(0, colonIndex + 1);
       const value = cleanLine.substring(colonIndex + 1);
+
+      const renderWithIndicators = (text) => {
+        if (typeof text !== 'string') return text;
+        const indicatorRegex = /\(indicator\s*([0-9.]+)\)/ig;
+        const nodes = [];
+        let lastIndex = 0;
+        let match;
+        while ((match = indicatorRegex.exec(text)) !== null) {
+          const before = text.substring(lastIndex, match.index);
+          if (before) nodes.push(...[].concat(renderBoldText(before)));
+          const code = match[1];
+          // Map to ordinal using COT mapping
+          const ordinal = mapIndicatorToOrdinal(code);
+          const display = ordinal ? `(${`indicator ${ordinal}`})` : `(indicator ${code})`;
+          nodes.push(
+            <strong key={`ind-${match.index}`} className="font-bold text-red-600">{display}</strong>
+          );
+          lastIndex = indicatorRegex.lastIndex;
+        }
+        const rest = text.substring(lastIndex);
+        if (rest) nodes.push(...[].concat(renderBoldText(rest)));
+        return nodes;
+      };
+
       elements.push(
         <div key={`text-${idx}`} className="my-0.5 leading-relaxed">
           <strong className="font-bold text-slate-900">{label.replace(/\*/g, '')}</strong>
-          {renderBoldText(value)}
+          {renderWithIndicators(value)}
         </div>
       );
     } else {
+      const renderWithIndicatorsInline = (text) => {
+        if (typeof text !== 'string') return text;
+        const indicatorRegex = /\(indicator\s*([0-9.]+)\)/ig;
+        const nodes = [];
+        let lastIndex = 0;
+        let match;
+        while ((match = indicatorRegex.exec(text)) !== null) {
+          const before = text.substring(lastIndex, match.index);
+          if (before) nodes.push(...[].concat(renderBoldText(before)));
+          const code = match[1];
+          const ordinal = mapIndicatorToOrdinal(code);
+          const display = ordinal ? `(indicator ${ordinal})` : `(indicator ${code})`;
+          nodes.push(
+            <strong key={`ind-inline-${match.index}`} className="font-bold text-red-600">{display}</strong>
+          );
+          lastIndex = indicatorRegex.lastIndex;
+        }
+        const rest = text.substring(lastIndex);
+        if (rest) nodes.push(...[].concat(renderBoldText(rest)));
+        return nodes;
+      };
+
       elements.push(
         <div key={`text-${idx}`} className="my-0.5 leading-relaxed">
-          {renderBoldText(cleanLine)}
+          {renderWithIndicatorsInline(cleanLine)}
         </div>
       );
     }
@@ -185,6 +237,7 @@ const renderSafeContent = (content, isStandardList = false) => {
   if (typeof content === 'string') {
     const trimmed = content.trim();
 
+    // If the string is a JSON array encoded as text, parse it and render as array
     if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
       try {
         const parsed = JSON.parse(trimmed);
@@ -192,6 +245,48 @@ const renderSafeContent = (content, isStandardList = false) => {
           return renderSafeContent(parsed, isStandardList);
         }
       } catch (e) {}
+    }
+
+    // Helper to render a labelled line such as "Knowledge: ..." with the label bolded
+    const renderLabelledLine = (line, keyPrefixClass = 'text-[#1B365D]') => {
+      const m = line.match(/^\s*([^:]{1,60}:)\s*([\s\S]*)$/);
+      if (m) {
+        const rawLabel = m[1].trim();
+        const label = rawLabel.replace(/^\*+/g, '').replace(/\*+$/g, '').trim();
+        const rest = m[2] || '';
+        return (
+          <div className="leading-snug">
+            <span className={`font-bold ${keyPrefixClass}`}>{label}</span>
+            {rest ? <span className="ml-1">{formatFormattedText(rest)}</span> : null}
+          </div>
+        );
+      }
+      return <div className="leading-snug">{formatFormattedText(line)}</div>;
+    };
+
+    // Special-case: Learning Objectives in KSA format often come as a single string like:
+    // "Knowledge: ... Skills: ... Attitudes: ..." — split these into separate lines for readability.
+    if (/Knowledge:/i.test(trimmed) && (/Skills:/i.test(trimmed) || /Attitudes:/i.test(trimmed))) {
+      const parts = trimmed.split(/(?=(?:Knowledge:|Skills:|Attitudes:))/i).map(p => p.trim()).filter(Boolean);
+      return (
+        <div className="space-y-1">
+          {parts.map((part, i) => (
+            <div key={i}>{renderLabelledLine(part)}</div>
+          ))}
+        </div>
+      );
+    }
+
+    // For other multi-line strings, split by newline and bold any leading "Label:" patterns
+    if (trimmed.includes('\n')) {
+      const lines = trimmed.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      return (
+        <div className="space-y-1">
+          {lines.map((line, i) => (
+            <div key={i}>{renderLabelledLine(line)}</div>
+          ))}
+        </div>
+      );
     }
 
     return <div className="space-y-1">{formatFormattedText(content)}</div>;
@@ -202,17 +297,16 @@ const renderSafeContent = (content, isStandardList = false) => {
   }
 
   if (Array.isArray(content)) {
-    return (
-      <div className="space-y-1 text-xs sm:text-sm text-slate-700">
-        {content.map((item, idx) => (
-          <div key={idx} className="leading-snug">
-            {typeof item === 'object'
-              ? renderSafeContent(item, isStandardList)
-              : renderBoldText(String(item).replace(/^•\s*/, ''))}
-          </div>
-        ))}
-      </div>
-    );
+  return (
+    <div className="space-y-1 text-xs sm:text-sm text-slate-700">
+      {content.map((item, idx) => (
+        <div key={idx} className="leading-snug">
+          {/* Render each item through renderSafeContent so label-detection/styling applies consistently */}
+          {renderSafeContent(item, isStandardList)}
+        </div>
+      ))}
+    </div>
+  );
   }
 
   if (typeof content === 'object') {
@@ -221,7 +315,7 @@ const renderSafeContent = (content, isStandardList = false) => {
         {Object.entries(content).map(([key, val]) => (
           <div key={key} className="border-b border-slate-100 pb-1 last:border-none">
             <span className="font-bold text-slate-800 capitalize">
-              {key.replace(/([A-Z])/g, ' $1')}:{' '}
+              {key.replace(/([A-Z])/g, ' $1')}: {' '}
             </span>
             <div className="mt-0.5 text-slate-700">{renderSafeContent(val, isStandardList)}</div>
           </div>
@@ -231,6 +325,33 @@ const renderSafeContent = (content, isStandardList = false) => {
   }
 
   return String(content);
+};
+
+// Helper to extract Extended Learning content for a given session index.
+const getSessionExtendedLearning = (plan, idx) => {
+  const lp = plan;
+  // Candidate locations where different AI providers might place this data
+  const candidates = [
+    lp?.sessions?.[idx]?.extendedLearning,
+    lp?.sessions?.[idx]?.extendedLearningOpportunities,
+    lp?.sessions?.[idx]?.waysForward?.extendedLearning,
+    lp?.sessions?.[idx]?.waysForward?.extendedLearningOpportunities,
+    lp?.sessions?.[idx]?.ways_forward?.extended_learning,
+    lp?.sessions?.[idx]?.ways_forward?.extended_learning_opportunities,
+    lp?.sessions?.[idx]?.extended_learning,
+    lp?.sessions?.[idx]?.extended_learning_opportunities,
+    // Top-level fallbacks (array or per-session)
+    Array.isArray(lp?.waysForward?.extendedLearningOpportunities) ? lp.waysForward.extendedLearningOpportunities[idx] : lp?.waysForward?.extendedLearningOpportunities,
+    lp?.waysForward?.extendedLearning,
+    lp?.waysForward?.extendedLearningOpportunities?.[idx],
+    lp?.extendedLearning?.[idx],
+    lp?.extendedLearningOpportunities?.[idx],
+    // snake_case top-level variants
+    lp?.extended_learning?.[idx],
+    lp?.extended_learning_opportunities?.[idx]
+  ];
+  const found = candidates.find((c) => c !== undefined && c !== null && String(c).trim() !== '');
+  return found || '';
 };
 
 const toRoman = (num) => {
@@ -257,12 +378,17 @@ const toRoman = (num) => {
 
 export default function Home() {
   const [instructionModalProvider, setInstructionModalProvider] = useState(null);
-  // States for API keys and selected model, now managed by ApiKeyPanel
+  // States for API keys, now managed by ApiKeyPanel
   const [currentApiKey, setCurrentApiKey] = useState('');
-  const [currentCerebrasApiKey, setCurrentCerebrasApiKey] = useState('');
-  const [currentOpenAiApiKey, setCurrentOpenAiApiKey] = useState('');
-  const [currentDeepSeekApiKey, setCurrentDeepSeekApiKey] = useState('');
-  const [currentSelectedModel, setCurrentSelectedModel] = useState('gemini-2.5-pro');
+  const [currentGroqApiKey, setCurrentGroqApiKey] = useState('');
+  const [currentOpenRouterApiKey, setCurrentOpenRouterApiKey] = useState('');
+
+  // Detected model lists (latest-first) for each provider — populated when
+  // the API key is verified. Passed to the server so the pipeline uses only
+  // models that are actually compatible with the user's key.
+  const [currentGeminiModels, setCurrentGeminiModels] = useState([]);
+  const [currentGroqModels, setCurrentGroqModels] = useState([]);
+  const [currentOpenRouterModels, setCurrentOpenRouterModels] = useState([]);
 
   // New state variables for metadata extraction
   const [isExtractingMetadata, setIsExtractingMetadata] = useState(false);
@@ -320,10 +446,15 @@ export default function Home() {
 
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
+  const [error, setError] = useState('');
   const [downloadingDocx, setDownloadingDocx] = useState(false);
   const [downloadingSeparatedDocx, setDownloadingSeparatedDocx] = useState(false);
   const [lessonPlan, setLessonPlan] = useState(null);
   const [snapshotData, setSnapshotData] = useState(null);
+  const [slideDeck, setSlideDeck] = useState(null);
+  const [generatingSlides, setGeneratingSlides] = useState(false);
+  const [slideDeckError, setSlideDeckError] = useState('');
+  const [downloadingSlides, setDownloadingSlides] = useState(false);
 
   // Support timer state
   const [showSupportTimer, setShowSupportTimer] = useState(false);
@@ -334,7 +465,7 @@ export default function Home() {
   const abortControllerRef = useRef(null);
   const loadingIntervalRef = useRef(null);
 
-  const loadingMessages = [
+  const loadingMessages = useMemo(() => [
     'Polishing the lesson objectives... ✨',
     'Bribing the AI with virtual coffee... ☕',
     'Convincing the lesson to write itself... 📝',
@@ -355,34 +486,46 @@ export default function Home() {
     'Rehearsing the \'any questions?\' face... 😐',
     'Formatting margins so they spark joy... 🎯',
     'Making sure the printer will cooperate tomorrow... 🖨️',
-  ];
+  ], []);
 
   // Start/stop rotating loading messages when loading state changes
   useEffect(() => {
-    if (loading) {
-      setLoadingMessage(loadingMessages[Math.floor(Math.random() * loadingMessages.length)]);
-      loadingIntervalRef.current = setInterval(() => {
-        setLoadingMessage(prev => {
-          let next;
-          do {
-            next = loadingMessages[Math.floor(Math.random() * loadingMessages.length)];
-          } while (next === prev && loadingMessages.length > 1);
-          return next;
-        });
-      }, 2500);
-    } else {
+    if (!loading) {
       if (loadingIntervalRef.current) {
         clearInterval(loadingIntervalRef.current);
         loadingIntervalRef.current = null;
       }
-      setLoadingMessage('');
+
+      const clearMessageTimeout = window.setTimeout(() => {
+        setLoadingMessage('');
+      }, 0);
+
+      return () => {
+        window.clearTimeout(clearMessageTimeout);
+      };
     }
+
+    const pickLoadingMessage = () => {
+      setLoadingMessage((prev) => {
+        let next;
+        do {
+          next = loadingMessages[Math.floor(Math.random() * loadingMessages.length)];
+        } while (next === prev && loadingMessages.length > 1);
+        return next;
+      });
+    };
+
+    pickLoadingMessage(); // Display message immediately
+    loadingIntervalRef.current = window.setInterval(pickLoadingMessage, 2000);
+
     return () => {
       if (loadingIntervalRef.current) {
         clearInterval(loadingIntervalRef.current);
+        loadingIntervalRef.current = null;
       }
+      // No initialMessageTimeout to clear anymore
     };
-  }, [loading]);
+  }, [loading, loadingMessages]);
 
   // Ref for auto-scrolling to lesson plan header
   const headerRef = useRef(null);
@@ -415,18 +558,158 @@ export default function Home() {
     };
   }, [showBowSupportGate, bowSupportCountdown]);
 
+  const proceedWithGeneration = useCallback(async () => {
+    console.log('[DEBUG] Starting generation...');
+    // Display a loading message immediately so the UI shows it without waiting for the effect to run
+    const immediateLoadingMsg = loadingMessages[Math.floor(Math.random() * loadingMessages.length)];
+    setLoadingMessage(immediateLoadingMsg);
+    setLoading(true);
+    setLessonPlan(null);
+    setShowSupportTimer(true);
+    setSupportCountdown(5);
+
+    const controller = new AbortController(); // Create AbortController
+    abortControllerRef.current = controller; // Store it in ref
+
+    try {
+      console.log('[DEBUG] Preparing payload...');
+      const finalResources = [...formData.resources];
+      if (finalResources.includes('Other (Please specify)...') && customResourceText.trim()) {
+        const index = finalResources.indexOf('Other (Please specify)...');
+        finalResources[index] = `Other: ${customResourceText.trim()}`;
+      }
+
+      const finalReferences = [...formData.references];
+      if (finalReferences.includes('Other (Please specify)...') && customReferenceText.trim()) {
+        const index = finalReferences.indexOf('Other (Please specify)...');
+        finalReferences[index] = `Other: ${customReferenceText.trim()}`;
+      }
+
+      let finalLearnerContext = formData.learnerContext;
+      if (finalLearnerContext === 'Other (Please specify)...' && customLearnerContextText.trim()) {
+        finalLearnerContext = `Other: ${customLearnerContextText.trim()}`;
+      }
+
+      const sessionMatch = formData.noOfSessions.match(/\d+/);
+      const parsedSessions = sessionMatch ? parseInt(sessionMatch[0], 10) : 5;
+
+      const submissionSnapshot = {
+        ...formData,
+        learnerContext: finalLearnerContext,
+        resources: finalResources,
+        references: finalReferences,
+      };
+
+      setSnapshotData(submissionSnapshot);
+
+      const autoTitlePrompt = !formData.lessonName.trim()
+        ? `AUTOMATIC LESSON TITLE GENERATION: No lesson title was provided by the user. Automatically generate a concise, professional, and engaging "lessonTitle" for the JSON output header based on the subject (${formData.subject}) and learning competency.`
+        : '';
+
+      const payload = {
+        lessonName: formData.lessonName,
+        subject: formData.subject,
+        teacherName: formData.teacherName,
+        masterTeacherName: formData.masterTeacherName,
+        principalName: formData.principalName,
+        gradeAndSection: formData.gradeAndSection,
+        language: formData.language,
+        noOfSessions: formData.noOfSessions,
+        sessionLength: formData.sessionLength,
+        term: formData.term,
+        week: formData.week,
+        learningCompetency: formData.learningCompetency,
+        contentStandards: formData.contentStandards,
+        performanceStandards: formData.performanceStandards,
+        learnerContext: finalLearnerContext,
+        additionalPrompts: formData.additionalPrompts,
+        resources: finalResources,
+        references: finalReferences,
+        geminiApiKey: currentApiKey,
+        groqApiKey: currentGroqApiKey,
+        openRouterApiKey: currentOpenRouterApiKey,
+        includeCotIndicators,
+        geminiModels: currentGeminiModels,
+        groqModels: currentGroqModels,
+        openRouterModels: currentOpenRouterModels,
+        autoTitlePrompt,
+      };
+
+      console.log('[DEBUG] Sending request...');
+      const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      console.log('[DEBUG] Response received', response.status);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Generation failed (${response.status}): ${errorText}`);
+      }
+
+      const result = await response.json();
+      console.log('[DEBUG] Parsed result', result);
+
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      setLessonPlan(result.plan || result);
+      setLoading(false);
+      setLoadingMessage('');
+      setError('');
+      setShowSupportTimer(false);
+      setSupportCountdown(5);
+    } catch (err) {
+      console.error('[DEBUG] Generation error', err);
+      if (!controller.signal.aborted) {
+        setError(err.message || 'Failed to generate lesson plan.');
+      }
+      setLoading(false);
+      setLoadingMessage('');
+      setShowSupportTimer(false);
+      setSupportCountdown(5);
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
+    }
+  }, [currentApiKey, currentGroqApiKey, currentOpenRouterApiKey, currentGeminiModels, currentGroqModels, currentOpenRouterModels, customLearnerContextText, customReferenceText, customResourceText, formData, includeCotIndicators]);
+
+  // Keep a ref to the latest generation function so the timer effect
+  // doesn't restart when formData or other deps change.
+  const proceedWithGenerationRef = useRef(proceedWithGeneration);
+  useEffect(() => {
+    proceedWithGenerationRef.current = proceedWithGeneration;
+  }, [proceedWithGeneration]);
+
   // Support timer countdown effect
   useEffect(() => {
-    if (showSupportTimer && supportCountdown > 0) {
-      supportTimerRef.current = setTimeout(() => {
-        setSupportCountdown(prev => prev - 1);
-      }, 1000);
-    } else if (showSupportTimer && supportCountdown === 0) {
-      // Timer finished, close the modal (generation already started)
-      setShowSupportTimer(false);
-      setSupportCountdown(5); // Reset for next time
+    if (!showSupportTimer) {
+      return;
     }
+
+    if (supportCountdown > 0) {
+      supportTimerRef.current = setTimeout(() => {
+        setSupportCountdown((prev) => prev - 1);
+      }, 1000);
+      return () => {
+        if (supportTimerRef.current) {
+          clearTimeout(supportTimerRef.current);
+        }
+      };
+    }
+
+    // Countdown finished - just hide the modal, generation already started
+    const finishTimerTimeout = window.setTimeout(() => {
+      setShowSupportTimer(false);
+      setSupportCountdown(5);
+    }, 0);
+
     return () => {
+      window.clearTimeout(finishTimerTimeout);
       if (supportTimerRef.current) {
         clearTimeout(supportTimerRef.current);
       }
@@ -499,7 +782,7 @@ export default function Home() {
   const extractBowMetadata = async (file) => {
     if (!file) return;
 
-    if (!currentApiKey && !currentCerebrasApiKey && !currentOpenAiApiKey && !currentDeepSeekApiKey) {
+    if (!currentApiKey && !currentGroqApiKey && !currentOpenRouterApiKey) {
       setMetadataExtractionError('Please enter an API Key to extract BOW metadata.');
       return;
     }
@@ -510,10 +793,11 @@ export default function Home() {
     try {
       const payload = new FormData();
       payload.append('apiKey', currentApiKey);
-      payload.append('cerebrasApiKey', currentCerebrasApiKey);
-      payload.append('openAiApiKey', currentOpenAiApiKey);
-      payload.append('deepSeekApiKey', currentDeepSeekApiKey);
-      payload.append('selectedModel', currentSelectedModel);
+      payload.append('groqApiKey', currentGroqApiKey);
+      payload.append('openRouterApiKey', currentOpenRouterApiKey);
+      payload.append('geminiModels', JSON.stringify(currentGeminiModels));
+      payload.append('groqModels', JSON.stringify(currentGroqModels));
+      payload.append('openRouterModels', JSON.stringify(currentOpenRouterModels));
       payload.append('bowFile', file);
 
       const res = await fetch('/api/extract-bow-metadata', {
@@ -623,7 +907,7 @@ export default function Home() {
   };
 
   const handleLoadEntries = async () => {
-    if (!currentApiKey && !currentCerebrasApiKey && !currentOpenAiApiKey) {
+    if (!currentApiKey && !currentGroqApiKey && !currentOpenRouterApiKey) {
       showToast({ message: 'Please enter an API Key in the API Configuration section.', type: 'error' });
       return;
     }
@@ -634,10 +918,11 @@ export default function Home() {
     try {
       const payload = new FormData();
       payload.append('apiKey', currentApiKey);
-      payload.append('cerebrasApiKey', currentCerebrasApiKey);
-      payload.append('openAiApiKey', currentOpenAiApiKey);
-      payload.append('deepSeekApiKey', currentDeepSeekApiKey);
-      payload.append('selectedModel', currentSelectedModel);
+      payload.append('groqApiKey', currentGroqApiKey);
+      payload.append('openRouterApiKey', currentOpenRouterApiKey);
+      payload.append('geminiModels', JSON.stringify(currentGeminiModels));
+      payload.append('groqModels', JSON.stringify(currentGroqModels));
+      payload.append('openRouterModels', JSON.stringify(currentOpenRouterModels));
       payload.append('term', formData.term);
       payload.append('week', formData.week);
       payload.append('subject', formData.subject);
@@ -677,9 +962,23 @@ export default function Home() {
   };
 
   const handleAbort = () => {
+    // If we're in the support timer countdown, cancel it and hide the popup
+    if (showSupportTimer) {
+      setShowSupportTimer(false);
+      setSupportCountdown(5);
+      if (supportTimerRef.current) {
+        clearTimeout(supportTimerRef.current);
+        supportTimerRef.current = null;
+      }
+      showToast({ message: 'Generation cancelled.', type: 'info' });
+      return;
+    }
+    
+    // If generation is in progress, abort it
     if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      setLoading(false); // Manually set loading to false on abort
+      abortControllerRef.current.abort('User aborted generation');
+      setLoading(false);
+      setLoadingMessage('');
       showToast({ message: 'Lesson plan generation aborted.', type: 'info' });
     }
   };
@@ -760,7 +1059,7 @@ export default function Home() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!currentApiKey && !currentCerebrasApiKey && !currentOpenAiApiKey && !currentDeepSeekApiKey) {
+    if (!currentApiKey && !currentGroqApiKey && !currentOpenRouterApiKey) {
       showToast({ message: 'Please enter an API Key in the API Configuration section above.', type: 'error' });
       return;
     }
@@ -774,152 +1073,8 @@ export default function Home() {
       return;
     }
 
-    // Show support timer before generation
-    setShowSupportTimer(true);
-    setSupportCountdown(5);
-  };
-
-  // Handle support timer completion - proceed with generation
-  useEffect(() => {
-    if (showSupportTimer && supportCountdown === 0) {
-      setShowSupportTimer(false);
-      proceedWithGeneration();
-    }
-  }, [showSupportTimer, supportCountdown]);
-
-  const proceedWithGeneration = async () => {
-    console.log('[DEBUG] Starting generation...');
-    setLoading(true);
-    setLessonPlan(null);
-
-    const controller = new AbortController(); // Create AbortController
-    abortControllerRef.current = controller; // Store it in ref
-
-    try {
-      console.log('[DEBUG] Preparing payload...');
-      const finalResources = [...formData.resources];
-      if (finalResources.includes('Other (Please specify)...') && customResourceText.trim()) {
-        const index = finalResources.indexOf('Other (Please specify)...');
-        finalResources[index] = `Other: ${customResourceText.trim()}`;
-      }
-
-      const finalReferences = [...formData.references];
-      if (finalReferences.includes('Other (Please specify)...') && customReferenceText.trim()) {
-        const index = finalReferences.indexOf('Other (Please specify)...');
-        finalReferences[index] = `Other: ${customReferenceText.trim()}`;
-      }
-
-      let finalLearnerContext = formData.learnerContext;
-      if (finalLearnerContext === 'Other (Please specify)...' && customLearnerContextText.trim()) {
-        finalLearnerContext = `Other: ${customLearnerContextText.trim()}`;
-      }
-
-      const sessionMatch = formData.noOfSessions.match(/\d+/);
-      const parsedSessions = sessionMatch ? parseInt(sessionMatch[0], 10) : 5;
-
-      const submissionSnapshot = {
-        ...formData,
-        learnerContext: finalLearnerContext,
-        resources: finalResources,
-        references: finalReferences,
-      };
-
-      setSnapshotData(submissionSnapshot);
-
-      const autoTitlePrompt = !formData.lessonName.trim()
-        ? `AUTOMATIC LESSON TITLE GENERATION: No lesson title was provided by the user. Automatically generate a concise, professional, and engaging "lessonTitle" for the JSON output header based on the subject (${formData.subject}) and learning competency.`
-        : '';
-
-      const referenceMatrixPrompt = `
-        ${autoTitlePrompt}
-
-        MANDATORY CURRICULUM FLOW & MATRIX ALIGNMENT:
-        Base the 5 sessions structure precisely on this plan:
-        Session 1:
-          - Pre-Lesson: Review of quadratic equations and inequalities basics.
-          - Flow: Introduction to quadratic inequalities, guided practice, and group discussion.
-          - Learning Resources: Laptop/Computer, Slide Presentation, Chalkboard/Whiteboard.
-          - Opportunities for Integration: Connecting quadratic inequalities to real-world problems and other math concepts.
-        Session 2:
-          - Pre-Lesson: Review of session 1 and introduction to algebraic methods.
-          - Flow: Direct instruction, guided practice, and independent work.
-          - Learning Resources: Slide Presentation, Audio/Speakers, Chalkboard/Whiteboard.
-          - Opportunities for Integration: Integrate technology to visualize and solve quadratic inequalities.
-        Session 3:
-          - Pre-Lesson: Introduction to quadratic inequalities in two variables.
-          - Flow: Group work, presentations, and class discussion.
-          - Learning Resources: Laptop/Computer, Projector/Smart TV, Chalkboard/Whiteboard.
-          - Opportunities for Integration: Connecting quadratic inequalities in two variables to real-world applications.
-        Session 4:
-          - Pre-Lesson: Review of session 3 and introduction to graphical methods.
-          - Flow: Direct instruction, guided practice, and independent work.
-          - Learning Resources: Slide Presentation, Audio/Speakers, Projector/Smart TV.
-          - Opportunities for Integration: Integrate technology to visualize and solve quadratic inequalities in two variables.
-        Session 5:
-          - Pre-Lesson: Review of previous sessions and introduction to complex problems.
-          - Flow: Independent work, group discussion, and presentations.
-          - Learning Resources: Laptop/Computer, Projector/Smart TV, Chalkboard/Whiteboard.
-          - Opportunities for Integration: Connecting quadratic inequalities to other math concepts and real-world applications.
-
-        STRICT REQUIREMENT FOR OBJECTIVES:
-        Formulate Learning Objectives for each session explicitly formatted as KSA:
-        - Knowledge: [Concept recall/understanding]
-        - Skills: [Action/problem solving]
-        - Attitudes: [Value/disposition]
-      `;
-
-      const payload = {
-        ...submissionSnapshot,
-        additionalPrompts: `${formData.additionalPrompts || ''}\n\n${referenceMatrixPrompt}`.trim(),
-        numSessions: parsedSessions,
-        topic: formData.lessonName || `${formData.term} ${formData.week} (${formData.subject})`,
-        gradeLevel: formData.gradeAndSection,
-        teacherName: formData.teacherName,
-        checkerName: formData.masterTeacherName,
-        geminiApiKey: currentApiKey,
-        cerebrasApiKey: currentCerebrasApiKey,
-        openAiApiKey: currentOpenAiApiKey,
-        deepSeekApiKey: currentDeepSeekApiKey,
-        selectedModel: currentSelectedModel,
-        includeCotIndicators,
-      };
-
-      console.log('[DEBUG] Sending request to /api/generate...');
-      const res = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      console.log('[DEBUG] Response status:', res.status);
-      const data = await res.json();
-      console.log('[DEBUG] Response data:', data);
-      if (!res.ok) throw new Error(data.error || 'Failed to generate plan');
-
-      if (data.plan) {
-        setLessonPlan({ ...data.plan, provider: data.provider });
-      } else if (data.lessonPlan) {
-        if (typeof data.lessonPlan === 'string') {
-          try {
-            const parsed = JSON.parse(data.lessonPlan);
-            setLessonPlan({ ...parsed, provider: data.provider });
-          } catch (e) {
-            setLessonPlan({ rawText: data.lessonPlan, provider: data.provider, ...submissionSnapshot });
-          }
-        } else {
-          setLessonPlan(data.lessonPlan);
-        }
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        console.log('Fetch aborted by user.');
-      } else {
-        showToast({ message: err.message, type: 'error' });
-      }
-    } finally {
-      setLoading(false);
-      abortControllerRef.current = null; // Clear the ref
-    }
+    // Start generation immediately
+    void proceedWithGeneration();
   };
 
   const getSessionCount = () => {
@@ -1078,7 +1233,22 @@ export default function Home() {
         const waysForwardTable = await createMatrixTable([
           {
             label: "Extended learning opportunities",
-            getValue: (idx) => formatDocxText(lessonPlan.sessions?.[idx]?.extendedLearning || (Array.isArray(lessonPlan.waysForward?.extendedLearningOpportunities) ? lessonPlan.waysForward.extendedLearningOpportunities[idx] : lessonPlan.waysForward?.extendedLearningOpportunities))
+            getValue: (idx) => {
+              // Support multiple possible shapes returned by different AI providers / prompt variants.
+              const candidates = [
+                lessonPlan?.sessions?.[idx]?.extendedLearning,
+                lessonPlan?.sessions?.[idx]?.extendedLearningOpportunities,
+                lessonPlan?.sessions?.[idx]?.waysForward?.extendedLearning,
+                lessonPlan?.sessions?.[idx]?.waysForward?.extendedLearningOpportunities,
+                Array.isArray(lessonPlan?.waysForward?.extendedLearningOpportunities) ? lessonPlan.waysForward.extendedLearningOpportunities[idx] : lessonPlan?.waysForward?.extendedLearningOpportunities,
+                lessonPlan?.waysForward?.extendedLearning,
+                lessonPlan?.waysForward?.extendedLearningOpportunities?.[idx],
+                lessonPlan?.extendedLearning?.[idx],
+                lessonPlan?.extendedLearningOpportunities?.[idx]
+              ];
+              const found = candidates.find((c) => c !== undefined && c !== null && String(c).trim() !== '');
+              return formatDocxText(found || "");
+            }
           },
           {
             label: "Reflections",
@@ -1239,6 +1409,170 @@ export default function Home() {
     }
   };
 
+  const handleGenerateSlides = async () => {
+    if (!lessonPlan) {
+      showToast({ message: 'Generate a lesson plan first before creating slides.', type: 'error' });
+      return;
+    }
+
+    if (!currentApiKey && !currentGroqApiKey && !currentOpenRouterApiKey) {
+      showToast({ message: 'Please enter an API key before generating a slide deck.', type: 'error' });
+      return;
+    }
+
+    setGeneratingSlides(true);
+    setSlideDeckError('');
+    setSlideDeck(null);
+
+    try {
+      const response = await fetch('/api/generate-slides', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lessonPlan,
+          snapshotData,
+          formData,
+          geminiModels: currentGeminiModels,
+          groqModels: currentGroqModels,
+          openRouterModels: currentOpenRouterModels,
+          geminiApiKey: currentApiKey,
+          groqApiKey: currentGroqApiKey,
+          openRouterApiKey: currentOpenRouterApiKey,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Slide generation failed (${response.status}): ${errorText}`);
+      }
+
+      const result = await response.json();
+      setSlideDeck(result.slideDeck || result);
+      showToast({ message: 'Slide deck outline generated successfully.', type: 'success' });
+    } catch (err) {
+      console.error('Error generating slides:', err);
+      setSlideDeckError(err.message || 'Failed to generate slide deck.');
+      showToast({ message: err.message || 'Failed to generate slide deck.', type: 'error' });
+    } finally {
+      setGeneratingSlides(false);
+    }
+  };
+
+  const handleDownloadSlidesPptx = async () => {
+    if (!slideDeck?.slides?.length) return;
+
+    setDownloadingSlides(true);
+
+    try {
+      const { default: PptxGenJS } = await import('pptxgenjs');
+      const pptx = new PptxGenJS();
+      pptx.layout = 'LAYOUT_WIDE';
+      pptx.author = 'IlawCraft';
+      pptx.company = 'IlawCraft';
+      pptx.subject = 'Lesson slide deck';
+      pptx.title = slideDeck.deckTitle || 'Lesson Slide Deck';
+
+      pptx.theme = {
+        name: 'ilaw',
+        colorScheme: {
+          accent1: '1B365D',
+          accent2: 'F59E0B',
+          accent3: '4B5563',
+          accent4: 'E2E8F0',
+          accent5: 'F8FAFC',
+          accent6: '111827',
+          hyperlink: { color: '1B365D' },
+          folHlink: { color: '1B365D' },
+        },
+      };
+
+      const titleSlide = pptx.addSlide();
+      titleSlide.background = { color: 'F8FAFC' };
+      titleSlide.addText(slideDeck.deckTitle || 'Lesson Slide Deck', {
+        x: 0.5,
+        y: 1.2,
+        w: 12,
+        h: 0.8,
+        fontSize: 26,
+        bold: true,
+        color: '1B365D',
+      });
+      titleSlide.addText(slideDeck.subtitle || snapshotData?.subject || 'Generated with IlawCraft', {
+        x: 0.5,
+        y: 2.1,
+        w: 12,
+        h: 0.5,
+        fontSize: 16,
+        color: '4B5563',
+      });
+      titleSlide.addText('Prepared for classroom delivery', {
+        x: 0.5,
+        y: 3.0,
+        w: 12,
+        h: 0.45,
+        fontSize: 14,
+        color: '111827',
+      });
+
+      slideDeck.slides.forEach((slide) => {
+        const contentSlide = pptx.addSlide();
+        contentSlide.background = { color: 'FFFFFF' };
+        contentSlide.addText(slide.title, {
+          x: 0.6,
+          y: 0.4,
+          w: 12.2,
+          h: 0.6,
+          fontSize: 24,
+          bold: true,
+          color: '1B365D',
+        });
+        if (slide.subtitle) {
+          contentSlide.addText(slide.subtitle, {
+            x: 0.6,
+            y: 1.0,
+            w: 12.2,
+            h: 0.45,
+            fontSize: 14,
+            color: '4B5563',
+          });
+        }
+
+        const bullets = (slide.bullets || []).map((bullet) => `• ${bullet}`);
+        contentSlide.addText(bullets.join('\n'), {
+          x: 0.95,
+          y: 1.65,
+          w: 11.2,
+          h: 3.8,
+          fontSize: 18,
+          color: '111827',
+          breakLine: true,
+          margin: 0.08,
+        });
+
+        if (slide.speakerNotes) {
+          contentSlide.addText(`Speaker notes: ${slide.speakerNotes}`, {
+            x: 0.95,
+            y: 5.75,
+            w: 11.2,
+            h: 0.8,
+            fontSize: 11,
+            color: '4B5563',
+          });
+        }
+      });
+
+      const subjectName = snapshotData?.subject || 'Subject';
+      const termName = snapshotData?.term || 'Term 1';
+      const weekName = snapshotData?.week || 'Week 1';
+      await pptx.writeFile({ fileName: `${subjectName}_${termName}_${weekName}_SlideDeck.pptx` });
+    } catch (err) {
+      console.error('Error exporting slide deck:', err);
+      showToast({ message: 'Failed to download slide deck.', type: 'error' });
+    } finally {
+      setDownloadingSlides(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-900 py-12 px-4 font-sans text-slate-200">
       {instructionModalProvider && (
@@ -1310,7 +1644,7 @@ export default function Home() {
             </div>
 
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              Before generating your lesson plan, please consider supporting IlawCraft's ongoing development and server costs. Every contribution helps keep this tool free for DepEd teachers! 💛
+              Before generating your lesson plan, please consider supporting IlawCraft&apos;s ongoing development and server costs. Every contribution helps keep this tool free for DepEd teachers! 💛
             </p>
 
             <div className="bg-slate-900/80 border border-slate-700 rounded-xl p-4 space-y-3">
@@ -1357,7 +1691,7 @@ export default function Home() {
             </div>
 
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              Before uploading your BOW PDF, please consider supporting IlawCraft's ongoing development and server costs. Every contribution helps keep this tool free for DepEd teachers! 💛
+              Before uploading your BOW PDF, please consider supporting IlawCraft&apos;s ongoing development and server costs. Every contribution helps keep this tool free for DepEd teachers! 💛
             </p>
 
             <div className="bg-slate-900/80 border border-slate-700 rounded-xl p-4 space-y-3">
@@ -1520,10 +1854,11 @@ export default function Home() {
         {/* API CONFIGURATION WITH EXACT MATCHING REFERENCE DETAIL DESIGN */}
         <ApiKeyPanel
           onApiKeyChange={setCurrentApiKey}
-          onCerebrasApiKeyChange={setCurrentCerebrasApiKey}
-          onOpenAiApiKeyChange={setCurrentOpenAiApiKey}
-          onDeepSeekApiKeyChange={setCurrentDeepSeekApiKey}
-          onSelectedModelChange={setCurrentSelectedModel}
+          onGroqApiKeyChange={setCurrentGroqApiKey}
+          onOpenRouterApiKeyChange={setCurrentOpenRouterApiKey}
+          onGeminiModelsChange={setCurrentGeminiModels}
+          onGroqModelsChange={setCurrentGroqModels}
+          onOpenRouterModelsChange={setCurrentOpenRouterModels}
         />
 
         {/* MAIN FORM */}
@@ -2044,8 +2379,11 @@ export default function Home() {
                 onChange={(e) => setIncludeCotIndicators(e.target.checked)}
                 className="w-4 h-4 rounded bg-slate-900 border-slate-700 text-[#F59E0B] focus:ring-[#F59E0B] cursor-pointer"
               />
-              <label htmlFor="includeCotIndicators" className="text-sm font-medium text-slate-300 cursor-pointer flex-1">
-                Include COT Indicators in generated lesson plan
+              <label htmlFor="includeCotIndicators" className="text-sm font-medium text-slate-300 cursor-pointer flex-1 flex items-center gap-2 flex-wrap">
+                <span>Include COT Indicators in generated lesson plan</span>
+                <span className="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
+                  Experimental
+                </span>
               </label>
               <Lightbulb className="w-4 h-4 text-amber-400 shrink-0" title="COT (Classroom Observation Tool) indicators are required for DepEd teacher evaluations. When enabled, the AI will automatically embed these indicators throughout the lesson plan." />
             </div>
@@ -2071,7 +2409,7 @@ export default function Home() {
               <button
                 type="button"
                 onClick={handleAbort}
-                disabled={!loading}
+                disabled={!loading && !showSupportTimer}
                 className="flex-none bg-red-700 hover:bg-red-600 active:bg-red-700 border border-red-500/40 disabled:opacity-50 text-white font-bold py-3.5 px-6 rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-red-700/30"
               >
                 <span className="flex items-center gap-2">
@@ -2135,7 +2473,7 @@ export default function Home() {
 
                   {/* === INTENTIONS SECTION === */}
                   <div className="bg-[#1B365D] text-white p-3 rounded-t-md font-bold text-sm">
-                    Intentions. <span className="font-normal text-xs text-slate-200">Meaningful learning experiences are anchored in how we frame them. Start by deciding what you want learners to master by the end of the lesson – keep it clear and simple. Remember: Understanding your learners' evolving context and designing around it ensure that your lessons connect with and are relevant to them.</span>
+                    Intentions. <span className="font-normal text-xs text-slate-200">Meaningful learning experiences are anchored in how we frame them. Start by deciding what you want learners to master by the end of the lesson – keep it clear and simple. Remember: Understanding your learners&apos; evolving context and designing around it ensure that your lessons connect with and are relevant to them.</span>
                   </div>
 
                   {/* CURRICULUM STANDARDS */}
@@ -2170,14 +2508,14 @@ export default function Home() {
                       <tbody>
                         {/* Learning Objectives Row */}
                         <tr>
-                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D]">Learning Objectives (KSA)</td>
+                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D] align-top">Learning Objectives (KSA)</td>
                           {sessionHeaders.map((_, idx) => (
                             <td key={idx} className="p-2 border border-slate-400 align-top">{renderSafeContent(lessonPlan.sessions?.[idx]?.learningObjectives)}</td>
                           ))}
                         </tr>
                         {/* Learner Context Row */}
                         <tr>
-                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D]">Learner Context</td>
+                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D] align-top">Learner Context</td>
                           {sessionHeaders.map((_, idx) => (
                             <td key={idx} className="p-2 border border-slate-400 align-top">{renderSafeContent(lessonPlan.sessions?.[idx]?.learnerContext || snapshotData?.learnerContext)}</td>
                           ))}
@@ -2205,28 +2543,28 @@ export default function Home() {
                       <tbody>
                         {/* Pre-Lesson Row */}
                         <tr>
-                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D]">Pre-Lesson</td>
+                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D] align-top">Pre-Lesson</td>
                           {sessionHeaders.map((_, idx) => (
                             <td key={idx} className="p-2 border border-slate-400 align-top">{renderSafeContent(lessonPlan.sessions?.[idx]?.preLesson)}</td>
                           ))}
                         </tr>
                         {/* Flow Row */}
                         <tr>
-                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D]">Flow</td>
+                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D] align-top">Flow</td>
                           {sessionHeaders.map((_, idx) => (
                             <td key={idx} className="p-2 border border-slate-400 align-top">{renderSafeContent(lessonPlan.sessions?.[idx]?.flow)}</td>
                           ))}
                         </tr>
                         {/* Learning Resources Row */}
                         <tr>
-                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D]">Learning Resources</td>
+                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D] align-top">Learning Resources</td>
                           {sessionHeaders.map((_, idx) => (
                             <td key={idx} className="p-2 border border-slate-400 align-top">{renderSafeContent(lessonPlan.sessions?.[idx]?.learningResources)}</td>
                           ))}
                         </tr>
                         {/* Opportunities for Integration Row */}
                         <tr>
-                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D]">Opportunities for integration</td>
+                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D] align-top">Opportunities for integration</td>
                           {sessionHeaders.map((_, idx) => (
                             <td key={idx} className="p-2 border border-slate-400 align-top">{renderSafeContent(lessonPlan.sessions?.[idx]?.opportunitiesForIntegration)}</td>
                           ))}
@@ -2254,7 +2592,7 @@ export default function Home() {
                       <tbody>
                         {/* Formative Assessment Row */}
                         <tr>
-                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D]">Formative Assessment</td>
+                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D] align-top">Formative Assessment</td>
                           {sessionHeaders.map((_, idx) => {
                             const assessData = lessonPlan?.sessions?.[idx]?.formativeAssessment;
                             return (
@@ -2285,15 +2623,15 @@ export default function Home() {
                       <tbody>
                         {/* Extended Learning Row */}
                         <tr>
-                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D]">Extended learning opportunities</td>
+                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D] align-top">Extended learning opportunities</td>
                           {sessionHeaders.map((_, idx) => (
-                            <td key={idx} className="p-2 border border-slate-400 align-top">{renderSafeContent(lessonPlan.sessions?.[idx]?.extendedLearning)}</td>
+                            <td key={idx} className="p-2 border border-slate-400 align-top">{renderSafeContent(getSessionExtendedLearning(lessonPlan, idx))}</td>
                           ))}
                         </tr>
-
+ 
                         {/* Reflections Row */}
                         <tr className="h-32">
-                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D]">Reflections</td>
+                          <td className="p-2 border border-slate-400 font-bold bg-[#F3F4F6] text-[#1B365D] align-top">Reflections</td>
                           {sessionHeaders.map((_, idx) => (
                             <td key={idx} className="p-2 border border-slate-400 align-top">{''}</td>
                           ))}
@@ -2331,40 +2669,116 @@ export default function Home() {
           )}
           {/* Download Buttons for Generated Lesson Plan */}
           {lessonPlan && !lessonPlan.rawText && (
-            <div className="flex flex-col sm:flex-row gap-4 justify-center mt-6">
-              <button
-                type="button"
-                onClick={handleDownloadDocx}
-                disabled={downloadingDocx}
-                className="flex-1 sm:flex-none bg-[#1B365D] hover:bg-[#254677] active:bg-[#1B365D] border border-[#F59E0B]/40 disabled:opacity-50 text-white font-bold py-3.5 px-6 rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-[#1B365D]/30"
-              >
-                {downloadingDocx ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin text-amber-400" /> Preparing Matrix DOCX...
-                  </>
-                ) : (
-                  <>
-                    <Download className="w-5 h-5 text-amber-400" /> Download Matrix DOCX
-                  </>
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={handleDownloadSeparatedDocx}
-                disabled={downloadingSeparatedDocx}
-                className="flex-1 sm:flex-none bg-[#1B365D] hover:bg-[#254677] active:bg-[#1B365D] border border-[#F59E0B]/40 disabled:opacity-50 text-white font-bold py-3.5 px-6 rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-[#1B365D]/30"
-              >
-                {downloadingSeparatedDocx ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin text-amber-400" /> Preparing Separated DOCX...
-                  </>
-                ) : (
-                  <>
-                    <Download className="w-5 h-5 text-amber-400" /> Download Separated DOCX
-                  </>
-                )}
-              </button>
-            </div>
+            <>
+              <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:p-6 shadow-sm">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="text-base font-bold text-[#1B365D]">Create a classroom-ready slide deck</h3>
+                    <p className="text-sm text-slate-600">Turn the generated lesson plan into a concise slide outline you can present in class.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleGenerateSlides}
+                    disabled={generatingSlides}
+                    className="flex items-center justify-center gap-2 rounded-xl border border-[#F59E0B]/40 bg-[#1B365D] px-4 py-2.5 font-semibold text-white shadow-lg shadow-[#1B365D]/25 transition disabled:opacity-50"
+                  >
+                    {generatingSlides ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin text-amber-400" /> Generating slides...
+                      </>
+                    ) : (
+                      <>
+                        <Presentation className="h-4 w-4 text-amber-400" /> Generate Slide Deck
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {slideDeckError ? (
+                  <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                    {slideDeckError}
+                  </div>
+                ) : null}
+
+                {slideDeck?.slides?.length ? (
+                  <div className="mt-4 space-y-3">
+                    <div className="text-sm font-semibold text-slate-700">Slide deck preview</div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {slideDeck.slides.slice(0, 4).map((slide, index) => (
+                        <div key={`${slide.title}-${index}`} className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+                          <div className="text-sm font-semibold text-[#1B365D]">{slide.title}</div>
+                          {slide.subtitle ? <div className="mt-1 text-xs text-slate-500">{slide.subtitle}</div> : null}
+                          <ul className="mt-2 space-y-1 text-xs text-slate-700">
+                            {slide.bullets.slice(0, 3).map((bullet, bulletIndex) => (
+                              <li key={`${slide.title}-${bulletIndex}`} className="flex gap-2">
+                                <span className="text-[#F59E0B]">•</span>
+                                <span>{bullet}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                    {slideDeck.slides.length > 4 ? (
+                      <div className="text-sm text-slate-500">+{slideDeck.slides.length - 4} more slides included in the downloaded deck.</div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-4 justify-center mt-6">
+                <button
+                  type="button"
+                  onClick={handleDownloadDocx}
+                  disabled={downloadingDocx}
+                  className="flex-1 sm:flex-none bg-[#1B365D] hover:bg-[#254677] active:bg-[#1B365D] border border-[#F59E0B]/40 disabled:opacity-50 text-white font-bold py-3.5 px-6 rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-[#1B365D]/30"
+                >
+                  {downloadingDocx ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin text-amber-400" /> Preparing Matrix DOCX...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-5 h-5 text-amber-400" /> Download Matrix DOCX
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadSeparatedDocx}
+                  disabled={downloadingSeparatedDocx}
+                  className="flex-1 sm:flex-none bg-[#1B365D] hover:bg-[#254677] active:bg-[#1B365D] border border-[#F59E0B]/40 disabled:opacity-50 text-white font-bold py-3.5 px-6 rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-[#1B365D]/30"
+                >
+                  {downloadingSeparatedDocx ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin text-amber-400" /> Preparing Separated DOCX...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-5 h-5 text-amber-400" /> Download Separated DOCX
+                    </>
+                  )}
+                </button>
+                {slideDeck?.slides?.length ? (
+                  <button
+                    type="button"
+                    onClick={handleDownloadSlidesPptx}
+                    disabled={downloadingSlides}
+                    className="flex-1 sm:flex-none bg-[#F59E0B] hover:bg-[#d97706] active:bg-[#b45309] border border-[#F59E0B]/40 disabled:opacity-50 text-slate-900 font-bold py-3.5 px-6 rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-[#F59E0B]/20"
+                  >
+                    {downloadingSlides ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin text-slate-900" /> Preparing PPTX...
+                      </>
+                    ) : (
+                      <>
+                        <Presentation className="w-5 h-5 text-slate-900" /> Download PPTX
+                      </>
+                    )}
+                  </button>
+                ) : null}
+              </div>
+            </>
           )}
         </div>
       </div>

@@ -10,10 +10,11 @@ export async function POST(req) {
 
     // Check headers first, then fall back to form data
     const geminiApiKey = req.headers.get('x-gemini-api-key') || formData.get('apiKey') || '';
-    const cerebrasApiKey = req.headers.get('x-cerebras-api-key') || formData.get('cerebrasApiKey') || '';
-    const openAiApiKey = req.headers.get('x-openai-api-key') || formData.get('openAiApiKey') || '';
-    const deepSeekApiKey = req.headers.get('x-deepseek-api-key') || formData.get('deepSeekApiKey') || '';
-    const selectedModel = req.headers.get('x-selected-model') || formData.get('selectedModel') || '';
+    const groqApiKey = req.headers.get('x-groq-api-key') || formData.get('groqApiKey') || '';
+    const openRouterApiKey = req.headers.get('x-openrouter-api-key') || formData.get('openRouterApiKey') || '';
+    const geminiModels = JSON.parse(formData.get('geminiModels') || '[]');
+    const groqModels = JSON.parse(formData.get('groqModels') || '[]');
+    const openRouterModels = JSON.parse(formData.get('openRouterModels') || '[]');
     const term = formData.get('term') || 'Term 1';
     const week = formData.get('week') || 'Week 5';
     const subject = formData.get('subject') || '';
@@ -26,7 +27,7 @@ export async function POST(req) {
       );
     }
 
-    if (!geminiApiKey && !cerebrasApiKey && !openAiApiKey && !deepSeekApiKey) {
+    if (!geminiApiKey && !groqApiKey && !openRouterApiKey) {
       return NextResponse.json(
         { error: 'No valid API keys were provided.' },
         { status: 400 }
@@ -101,10 +102,11 @@ JSON SCHEMA:
     // DeepSeek (FREE, 64K tokens) is prioritized over Cerebras and OpenAI.
     const pipeline = buildAllProvidersBowPipeline({
       geminiApiKey,
-      cerebrasApiKey,
-      openAiApiKey,
-      deepSeekApiKey,
-      selectedModel,
+      groqApiKey,
+      openRouterApiKey,
+      geminiModels,
+      groqModels,
+      openRouterModels,
       prompt,
       timeout: 12000,
       maxOutputTokens: 2000,

@@ -2,99 +2,34 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   buildLessonPlanPipeline,
   runLessonPlanPipeline,
-  LESSON_PLAN_PRIMARY_MODELS,
-  LESSON_PLAN_GEMINI_FALLBACKS,
+  fetchWithTimeout,
 } from '../lib/ai-providers';
 
+describe('fetchWithTimeout', () => {
+  it('aborts in-flight requests when the external signal is aborted', async () => {
+    const abortController = new AbortController();
+    let sawAbort = false;
+
+    vi.stubGlobal('fetch', vi.fn((_url, options) => new Promise((resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        sawAbort = true;
+        const error = new Error('The operation was aborted.');
+        error.name = 'AbortError';
+        reject(error);
+      });
+    })));
+
+    const promise = fetchWithTimeout('https://example.com', { signal: abortController.signal }, 10000);
+    abortController.abort();
+
+    await expect(promise).rejects.toThrow('The operation was aborted.');
+    expect(sawAbort).toBe(true);
+
+    vi.unstubAllGlobals();
+  });
+});
+
 describe('buildLessonPlanPipeline', () => {
-  it('includes primary models with isPrimary: true', () => {
-    const pipeline = buildLessonPlanPipeline({
-      geminiApiKey: 'test-key',
-      prompt: 'test prompt',
-      timeout: 5000,
-    });
-
-    const primaryCandidates = pipeline.filter((c) => c.isPrimary);
-    expect(primaryCandidates).toHaveLength(2);
-    expect(primaryCandidates.map((c) => c.model)).toEqual(
-      expect.arrayContaining(LESSON_PLAN_PRIMARY_MODELS)
-    );
-  });
-
-  it('includes fallback Gemini models with isPrimary: false', () => {
-    const pipeline = buildLessonPlanPipeline({
-      geminiApiKey: 'test-key',
-      prompt: 'test prompt',
-      timeout: 5000,
-    });
-
-    const fallbackCandidates = pipeline.filter((c) => !c.isPrimary && c.provider === 'Gemini');
-    expect(fallbackCandidates.length).toBeGreaterThan(0);
-    // Primary models should not appear in fallbacks
-    fallbackCandidates.forEach((c) => {
-      expect(LESSON_PLAN_PRIMARY_MODELS).not.toContain(c.model);
-    });
-  });
-
-  it('includes Cerebras models when cerebrasApiKey is provided', () => {
-    const pipeline = buildLessonPlanPipeline({
-      geminiApiKey: 'test-key',
-      cerebrasApiKey: 'test-cerebras-key',
-      prompt: 'test prompt',
-      timeout: 5000,
-    });
-
-    const cerebrasCandidates = pipeline.filter((c) => c.provider === 'Cerebras');
-    expect(cerebrasCandidates.length).toBeGreaterThan(0);
-    cerebrasCandidates.forEach((c) => {
-      expect(c.isPrimary).toBe(false);
-    });
-  });
-
-  it('includes OpenAI models when openAiApiKey is provided', () => {
-    const pipeline = buildLessonPlanPipeline({
-      geminiApiKey: 'test-key',
-      openAiApiKey: 'test-openai-key',
-      prompt: 'test prompt',
-      timeout: 5000,
-    });
-
-    const openAiCandidates = pipeline.filter((c) => c.provider === 'OpenAI');
-    expect(openAiCandidates.length).toBeGreaterThan(0);
-    openAiCandidates.forEach((c) => {
-      expect(c.isPrimary).toBe(false);
-    });
-  });
-
-  it('includes selectedModel in fallbacks if not a primary model', () => {
-    const pipeline = buildLessonPlanPipeline({
-      geminiApiKey: 'test-key',
-      selectedModel: 'gemini-2.0-flash',
-      prompt: 'test prompt',
-      timeout: 5000,
-    });
-
-    const fallbackModels = pipeline
-      .filter((c) => !c.isPrimary && c.provider === 'Gemini')
-      .map((c) => c.model);
-    expect(fallbackModels).toContain('gemini-2.0-flash');
-  });
-
-  it('does not duplicate selectedModel if it is a primary model', () => {
-    const pipeline = buildLessonPlanPipeline({
-      geminiApiKey: 'test-key',
-      selectedModel: 'gemini-2.5-flash',
-      prompt: 'test prompt',
-      timeout: 5000,
-    });
-
-    const allGeminiModels = pipeline
-      .filter((c) => c.provider === 'Gemini')
-      .map((c) => c.model);
-    const flashCount = allGeminiModels.filter((m) => m === 'gemini-2.5-flash').length;
-    expect(flashCount).toBe(1);
-  });
-
   it('returns empty pipeline when no API keys are provided', () => {
     const pipeline = buildLessonPlanPipeline({
       prompt: 'test prompt',
@@ -103,15 +38,71 @@ describe('buildLessonPlanPipeline', () => {
     expect(pipeline).toHaveLength(0);
   });
 
-  it('LESSON_PLAN_PRIMARY_MODELS contains gemini-2.5-flash and gemini-2.5-pro', () => {
-    expect(LESSON_PLAN_PRIMARY_MODELS).toContain('gemini-2.5-flash');
-    expect(LESSON_PLAN_PRIMARY_MODELS).toContain('gemini-2.5-pro');
-    expect(LESSON_PLAN_PRIMARY_MODELS).toHaveLength(2);
+  it('returns empty pipeline when no geminiModels are provided', () => {
+    const pipeline = buildLessonPlanPipeline({
+      geminiApiKey: 'test-key',
+      prompt: 'test prompt',
+      timeout: 5000,
+    });
+    expect(pipeline).toHaveLength(0);
   });
 
-  it('LESSON_PLAN_GEMINI_FALLBACKS does not include primary models', () => {
-    LESSON_PLAN_PRIMARY_MODELS.forEach((primary) => {
-      expect(LESSON_PLAN_GEMINI_FALLBACKS).not.toContain(primary);
+  it('marks first model as primary when geminiModels are provided', () => {
+    const pipeline = buildLessonPlanPipeline({
+      geminiApiKey: 'test-key',
+      geminiModels: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+      prompt: 'test prompt',
+      timeout: 5000,
+    });
+
+    const primaryCandidates = pipeline.filter((c) => c.isPrimary);
+    expect(primaryCandidates).toHaveLength(1);
+    expect(primaryCandidates[0].model).toBe('gemini-2.5-flash');
+  });
+
+  it('includes all geminiModels in the pipeline', () => {
+    const pipeline = buildLessonPlanPipeline({
+      geminiApiKey: 'test-key',
+      geminiModels: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+      prompt: 'test prompt',
+      timeout: 5000,
+    });
+
+    const geminiCandidates = pipeline.filter((c) => c.provider === 'Gemini');
+    expect(geminiCandidates).toHaveLength(3);
+  });
+
+  it('includes Groq models when groqApiKey and groqModels are provided', () => {
+    const pipeline = buildLessonPlanPipeline({
+      geminiApiKey: 'test-key',
+      geminiModels: ['gemini-2.5-flash'],
+      groqApiKey: 'test-groq-key',
+      groqModels: ['llama-3.3-70b', 'llama-3.1-8b'],
+      prompt: 'test prompt',
+      timeout: 5000,
+    });
+
+    const groqCandidates = pipeline.filter((c) => c.provider === 'Groq');
+    expect(groqCandidates).toHaveLength(2);
+    groqCandidates.forEach((c) => {
+      expect(c.isPrimary).toBe(false);
+    });
+  });
+
+  it('includes OpenRouter models when openRouterApiKey and openRouterModels are provided', () => {
+    const pipeline = buildLessonPlanPipeline({
+      geminiApiKey: 'test-key',
+      geminiModels: ['gemini-2.5-flash'],
+      openRouterApiKey: 'test-openrouter-key',
+      openRouterModels: ['gpt-4o', 'claude-3.5-sonnet'],
+      prompt: 'test prompt',
+      timeout: 5000,
+    });
+
+    const openRouterCandidates = pipeline.filter((c) => c.provider === 'OpenRouter');
+    expect(openRouterCandidates).toHaveLength(2);
+    openRouterCandidates.forEach((c) => {
+      expect(c.isPrimary).toBe(false);
     });
   });
 });
@@ -159,7 +150,7 @@ describe('runLessonPlanPipeline', () => {
         fn: () => Promise.reject(new Error('API error')),
       },
       {
-        provider: 'Cerebras',
+        provider: 'Groq',
         model: 'llama-3.3-70b',
         isPrimary: false,
         fn: () => Promise.resolve(validJson),
@@ -172,7 +163,7 @@ describe('runLessonPlanPipeline', () => {
     });
 
     expect(result).not.toBeNull();
-    expect(result.provider).toContain('Cerebras');
+    expect(result.provider).toContain('Groq');
   });
 
   it('retries primary models and succeeds on a later attempt', async () => {
@@ -225,7 +216,7 @@ describe('runLessonPlanPipeline', () => {
         fn: () => Promise.reject(new Error('API error')),
       },
       {
-        provider: 'Cerebras',
+        provider: 'Groq',
         model: 'llama-3.3-70b',
         isPrimary: false,
         fn: () => Promise.reject(new Error('API error')),
@@ -335,7 +326,7 @@ describe('runLessonPlanPipeline', () => {
         fn: () => Promise.resolve(validJson),
       },
       {
-        provider: 'Cerebras',
+        provider: 'Groq',
         model: 'llama-3.3-70b',
         isPrimary: false,
         fn: () => {
@@ -344,7 +335,7 @@ describe('runLessonPlanPipeline', () => {
         },
       },
       {
-        provider: 'Cerebras',
+        provider: 'Groq',
         model: 'llama-3.1-8b',
         isPrimary: false,
         fn: () => {

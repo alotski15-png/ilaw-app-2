@@ -15,6 +15,12 @@ const SessionSchema = z.object({
   opportunitiesForIntegration: z.any().optional(),
   formativeAssessment: z.any().optional(),
   extendedLearning: z.any().optional(),
+  extendedLearningOpportunities: z.any().optional(),
+  waysForward: z.object({
+    extendedLearning: z.any().optional(),
+    extendedLearningOpportunities: z.any().optional(),
+  }).optional(),
+  ways_forward: z.any().optional(),
   reflections: z.any().optional(),
 });
 
@@ -41,15 +47,28 @@ export const runtime = 'nodejs';
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { selectedModel, ...formData } = body;
+    const { geminiModels, groqModels, openRouterModels, ...formData } = body;
+    // The determined and sorted model lists (latest-first) are the default
+    // models. The first entry in each list is the primary model.
+    // The `selectedModel` field is no longer used — only the *Models arrays.
+    const abortController = new AbortController();
+    const handleAbort = () => abortController.abort('Request aborted by client');
+
+    if (req.signal.aborted) {
+      abortController.abort('Request already aborted');
+    } else {
+      req.signal.addEventListener('abort', handleAbort, { once: true });
+    }
+
+    const signal = abortController.signal;
+
     // Check headers first, then fall back to JSON body fields
     const geminiApiKey = req.headers.get('x-gemini-api-key') || body.geminiApiKey || '';
-    const cerebrasApiKey = req.headers.get('x-cerebras-api-key') || body.cerebrasApiKey || '';
-    const openAiApiKey = req.headers.get('x-openai-api-key') || body.openAiApiKey || '';
-    const deepSeekApiKey = req.headers.get('x-deepseek-api-key') || body.deepSeekApiKey || '';
+    const groqApiKey = req.headers.get('x-groq-api-key') || body.groqApiKey || '';
+    const openRouterApiKey = req.headers.get('x-openrouter-api-key') || body.openRouterApiKey || '';
 
 
-    if (!geminiApiKey && !cerebrasApiKey && !openAiApiKey && !deepSeekApiKey) {
+    if (!geminiApiKey && !groqApiKey && !openRouterApiKey) {
       return NextResponse.json(
         { error: 'No valid API keys were provided.' },
         { status: 400 }
@@ -281,7 +300,7 @@ REQUIRED JSON STRUCTURE
 `;
 
     // Conditionally include COT indicator instructions based on user preference
-    const cotInstruction = body.includeCotIndicators !== false ? `
+    const cotInstruction = body.includeCotIndicators === true ? `
 ████████████████████████████████████████████████████████████
 COT INDICATOR ALIGNMENT (MANDATORY — HIGH YIELD RATING)
 ████████████████████████████████████████████████████████████
@@ -341,16 +360,13 @@ CRITICAL: Each indicator must appear at least once across the sessions. The anno
 
     const prompt = `${systemInstruction}${cotInstruction}\nUser Input Data: ${JSON.stringify(formData)}`;
 
-    // Use the request's abort signal directly - this is automatically aborted
-    // when the client calls abort() on the AbortController in page.js
-    const signal = req.signal;
-
     const pipeline = buildLessonPlanPipeline({
       geminiApiKey,
-      cerebrasApiKey,
-      openAiApiKey,
-      deepSeekApiKey,
-      selectedModel,
+      groqApiKey,
+      openRouterApiKey,
+      geminiModels,
+      groqModels,
+      openRouterModels,
       prompt,
       timeout: 25000,
       maxOutputTokens: 16384,
@@ -375,8 +391,8 @@ CRITICAL: Each indicator must appear at least once across the sessions. The anno
       if (!parsed || !Array.isArray(parsed.sessions) || parsed.sessions.length !== targetSessions) {
         return false;
       }
-      // Only validate COT indicators if the user enabled them
-      if (body.includeCotIndicators !== false) {
+      // Only validate COT indicators if the user explicitly enabled them
+      if (body.includeCotIndicators === true) {
         const fullText = JSON.stringify(parsed);
         const missing = REQUIRED_COT_INDICATORS.filter(ind => !fullText.includes(ind));
         if (missing.length > 0) {
@@ -440,6 +456,13 @@ CRITICAL: Each indicator must appear at least once across the sessions. The anno
     return NextResponse.json({ plan: parsed.data, provider: result.provider });
 
   } catch (error) {
+    if (error?.name === 'AbortError' || error?.message === 'Aborted') {
+      return NextResponse.json(
+        { error: 'Generation aborted.' },
+        { status: 499 }
+      );
+    }
+
     console.error('Final Route Exception:', error);
     return NextResponse.json(
       { error: error.message || 'An error occurred while generating the plan.' },

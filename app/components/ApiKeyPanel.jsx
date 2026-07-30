@@ -1,28 +1,14 @@
 'use client';
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Lightbulb, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
-import { showToast } from './Toast';
-import ApiKeyInstructionsModal from './ApiKeyInstructionsModal';
-import { getCookie, setCookie, removeCookie } from '../../lib/cookie';
 
-// All Gemini models verified against Google's actual API (fetched via the user's key).
-// All 14 text-generation models are included for maximum compatibility.
-const DEFAULT_GEMINI_MODELS = [
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (gemini-2.5-pro)' },
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (gemini-2.5-flash)' },
-  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash-Lite (gemini-2.5-flash-lite)' },
-  { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash (gemini-2.0-flash)' },
-  { id: 'gemini-2.0-flash-lite', name: 'Gemini 2.0 Flash-Lite (gemini-2.0-flash-lite)' },
-  { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash (gemini-3.6-flash)' },
-  { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash (gemini-3.5-flash)' },
-  { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash-Lite (gemini-3.5-flash-lite)' },
-  { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash-Lite (gemini-3.1-flash-lite)' },
-  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro Preview (gemini-3.1-pro-preview)' },
-  { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro Preview (gemini-3-pro-preview)' },
-  { id: 'gemini-flash-latest', name: 'Gemini Flash Latest (gemini-flash-latest)' },
-  { id: 'gemini-flash-lite-latest', name: 'Gemini Flash-Lite Latest (gemini-flash-lite-latest)' },
-  { id: 'gemini-pro-latest', name: 'Gemini Pro Latest (gemini-pro-latest)' },
-];
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Lightbulb, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
+import ApiKeyInstructionsModal from './ApiKeyInstructionsModal';
+import { getCookie, setCookie } from '../../lib/cookie';
+import {
+  parseGeminiModels,
+  parseOpenAICompatibleModels,
+  getPrimaryModel,
+} from '../../lib/model-sorter';
 
 function debounce(fn, delay) {
   let timer;
@@ -34,34 +20,44 @@ function debounce(fn, delay) {
 
 export default function ApiKeyPanel({
   onApiKeyChange,
-  onCerebrasApiKeyChange,
-  onOpenAiApiKeyChange,
-  onDeepSeekApiKeyChange,
-  onSelectedModelChange,
+  onGroqApiKeyChange,
+  onOpenRouterApiKeyChange,
+  onGeminiModelsChange,
+  onGroqModelsChange,
+  onOpenRouterModelsChange,
 }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalProvider, setModalProvider] = useState('');
 
-  const [apiKey, setApiKey] = useState(getCookie('apikey') || '');
-  const [cerebrasApiKey, setCerebrasApiKey] = useState('');
-  const [openAiApiKey, setOpenAiApiKey] = useState('');
-  const [deepSeekApiKey, setDeepSeekApiKey] = useState('');
+  const [apiKey, setApiKey] = useState(() => {
+    if (typeof window === 'undefined') return getCookie('apikey') || '';
+    return localStorage.getItem('gemini_api_key') || getCookie('apikey') || '';
+  });
+  const [groqApiKey, setGroqApiKey] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    return localStorage.getItem('groq_api_key') || '';
+  });
+  const [openRouterApiKey, setOpenRouterApiKey] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    return localStorage.getItem('openrouter_api_key') || '';
+  });
 
-  // Default to gemini-2.5-pro (most capable real model)
-  const [selectedModel, setSelectedModel] = useState('gemini-2.5-pro');
-  const [availableModels, setAvailableModels] = useState(DEFAULT_GEMINI_MODELS);
   const [autoDetectStatus, setAutoDetectStatus] = useState('');
   const [isDetecting, setIsDetecting] = useState(false);
   const [keyIsValid, setKeyIsValid] = useState(false);
 
-  const [cerebrasKeyIsValid, setCerebrasKeyIsValid] = useState(false);
-  const [isDetectingCerebras, setIsDetectingCerebras] = useState(false);
+  const [groqKeyIsValid, setGroqKeyIsValid] = useState(false);
+  const [isDetectingGroq, setIsDetectingGroq] = useState(false);
+  const [groqDetectStatus, setGroqDetectStatus] = useState('');
 
-  const [openAiKeyIsValid, setOpenAiKeyIsValid] = useState(false);
-  const [isDetectingOpenAi, setIsDetectingOpenAi] = useState(false);
+  const [openRouterKeyIsValid, setOpenRouterKeyIsValid] = useState(false);
+  const [isDetectingOpenRouter, setIsDetectingOpenRouter] = useState(false);
+  const [openRouterDetectStatus, setOpenRouterDetectStatus] = useState('');
 
-  const [deepSeekKeyIsValid, setDeepSeekKeyIsValid] = useState(false);
-  const [isDetectingDeepSeek, setIsDetectingDeepSeek] = useState(false);
+  // Track detected model lists (latest-first) for each provider.
+  const [geminiModelIds, setGeminiModelIds] = useState([]);
+  const [groqModelIds, setGroqModelIds] = useState([]);
+  const [openRouterModelIds, setOpenRouterModelIds] = useState([]);
 
   const openModal = (provider) => {
     setModalProvider(provider);
@@ -73,11 +69,26 @@ export default function ApiKeyPanel({
     setModalProvider('');
   };
 
+  // Helper: apply a sorted (latest-first) model list and propagate to parent.
+  const applyGeminiModels = useCallback(
+    (sortedIds) => {
+      if (!Array.isArray(sortedIds) || sortedIds.length === 0) return;
+      setGeminiModelIds(sortedIds);
+      if (onGeminiModelsChange) onGeminiModelsChange(sortedIds);
+    },
+    [onGeminiModelsChange]
+  );
+
+  // -------------------------------------------------------------------------
+  // Gemini: verify key + fetch compatible models
+  // -------------------------------------------------------------------------
   const handleAutoDetectModels = useCallback(async (keyToTest) => {
     const targetKey = keyToTest;
     if (!targetKey || targetKey.trim() === '') {
       setAutoDetectStatus('');
       setKeyIsValid(false);
+      setGeminiModelIds([]);
+      if (onGeminiModelsChange) onGeminiModelsChange([]);
       return;
     }
 
@@ -89,46 +100,12 @@ export default function ApiKeyPanel({
       const data = await res.json();
 
       if (data.models && data.models.length > 0) {
-        const contentModels = data.models.filter((m) =>
-          m.supportedGenerationMethods?.includes('generateContent')
-        );
+        const sortedIds = parseGeminiModels(data.models);
 
-        // Filter out unstable/preview models that don't reliably return JSON
-        const unstableModels = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3-pro-preview', 'gemini-omni-flash-preview', 'gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts', 'gemini-2.5-flash-image', 'gemini-3-pro-image-preview', 'gemini-3-pro-image', 'nano-banana-pro-preview', 'gemini-3.1-flash-image-preview', 'gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image', 'gemini-3.1-flash-tts-preview', 'gemini-robotics-er-1.5-preview', 'gemini-robotics-er-1.6-preview', 'gemini-2.5-computer-use-preview-10-2025', 'antigravity-preview-05-2026', 'deep-research-max-preview-04-2026', 'deep-research-preview-04-2026', 'deep-research-pro-preview-12-2025', 'lyria-3-clip-preview', 'lyria-3-pro-preview'];
-        const stableModels = contentModels.filter((m) => {
-          const cleanId = m.name.replace('models/', '');
-          return !unstableModels.includes(cleanId);
-        });
-
-        const formattedModels = stableModels.map((m) => {
-          const cleanId = m.name.replace('models/', '');
-          return {
-            id: cleanId,
-            name: `${m.displayName || cleanId} (${cleanId})`,
-          };
-        });
-
-        if (formattedModels.length > 0) {
-          setAvailableModels(formattedModels);
+        if (sortedIds.length > 0) {
+          applyGeminiModels(sortedIds);
           setKeyIsValid(true);
-
-          // Find a preferred flash model
-          let preferredModel = formattedModels.find(
-            (m) => m.id.includes('flash')
-          );
-
-          if (formattedModels.some((m) => m.id === selectedModel)) {
-            setSelectedModel(selectedModel);
-            onSelectedModelChange(selectedModel);
-          } else if (preferredModel) {
-            setSelectedModel(preferredModel.id);
-            onSelectedModelChange(preferredModel.id);
-          } else {
-            setSelectedModel(formattedModels[0].id);
-            onSelectedModelChange(formattedModels[0].id);
-          }
-
-          setAutoDetectStatus(`Success! Key verified & auto-detected ${formattedModels.length} compatible models.`);
+          setAutoDetectStatus(`Success! Key verified & auto-detected ${sortedIds.length} compatible models (latest first).`);
         } else {
           setKeyIsValid(false);
           setAutoDetectStatus('Error: No content generation models detected for this key.');
@@ -143,106 +120,131 @@ export default function ApiKeyPanel({
     } finally {
       setIsDetecting(false);
     }
-  }, [selectedModel, onSelectedModelChange]);
+  }, [applyGeminiModels, onGeminiModelsChange]);
 
-  const debouncedAutoDetect = useCallback(
-    debounce((key) => handleAutoDetectModels(key), 600),
+  const debouncedAutoDetect = useMemo(
+    () => debounce((key) => {
+      handleAutoDetectModels(key);
+    }, 600),
     [handleAutoDetectModels]
   );
 
+  // -------------------------------------------------------------------------
+  // Generic OpenAI-compatible verifier (Groq, OpenRouter)
+  // Fetches /v1/models, sorts latest-first, and stores the list.
+  // -------------------------------------------------------------------------
   const handleVerifyProviderKey = useCallback(async (provider, key) => {
     if (!key || key.trim() === '') {
-      if (provider === 'cerebras') setCerebrasKeyIsValid(false);
-      if (provider === 'openai') setOpenAiKeyIsValid(false);
-      if (provider === 'deepseek') setDeepSeekKeyIsValid(false);
+      if (provider === 'groq') {
+        setGroqKeyIsValid(false);
+        setGroqDetectStatus('');
+        setGroqModelIds([]);
+        if (onGroqModelsChange) onGroqModelsChange([]);
+      }
+      if (provider === 'openrouter') {
+        setOpenRouterKeyIsValid(false);
+        setOpenRouterDetectStatus('');
+        setOpenRouterModelIds([]);
+        if (onOpenRouterModelsChange) onOpenRouterModelsChange([]);
+      }
       return;
     }
 
-    let url, options, setDetecting, setValid;
+    let url, options, setDetecting, setValid, setStatus, setModelIds, onModelsChange;
 
-    if (provider === 'cerebras') {
-      url = 'https://api.cerebras.ai/v1/models';
+    if (provider === 'groq') {
+      url = 'https://api.groq.com/openai/v1/models';
       options = { headers: { Authorization: `Bearer ${key}` } };
-      setDetecting = setIsDetectingCerebras;
-      setValid = setCerebrasKeyIsValid;
-    } else if (provider === 'openai') {
-      url = 'https://api.openai.com/v1/models';
+      setDetecting = setIsDetectingGroq;
+      setValid = setGroqKeyIsValid;
+      setStatus = setGroqDetectStatus;
+      setModelIds = setGroqModelIds;
+      onModelsChange = onGroqModelsChange;
+    } else if (provider === 'openrouter') {
+      url = 'https://openrouter.ai/api/v1/models';
       options = { headers: { Authorization: `Bearer ${key}` } };
-      setDetecting = setIsDetectingOpenAi;
-      setValid = setOpenAiKeyIsValid;
-    } else if (provider === 'deepseek') {
-      url = 'https://api.deepseek.com/v1/models';
-      options = { headers: { Authorization: `Bearer ${key}` } };
-      setDetecting = setIsDetectingDeepSeek;
-      setValid = setDeepSeekKeyIsValid;
+      setDetecting = setIsDetectingOpenRouter;
+      setValid = setOpenRouterKeyIsValid;
+      setStatus = setOpenRouterDetectStatus;
+      setModelIds = setOpenRouterModelIds;
+      onModelsChange = onOpenRouterModelsChange;
     } else {
       return;
     }
 
     setDetecting(true);
     setValid(false);
+    setStatus('');
 
     try {
       const res = await fetch(url, options);
-      setValid(res.ok);
+      if (!res.ok) {
+        setValid(false);
+        const errData = await res.json().catch(() => ({}));
+        setStatus(`Error: ${errData.error?.message || `Status ${res.status}`}`);
+        setModelIds([]);
+        if (onModelsChange) onModelsChange([]);
+        return;
+      }
+
+      const data = await res.json();
+      const sortedIds = parseOpenAICompatibleModels(data.data || data.models || data);
+
+      setValid(true);
+      setModelIds(sortedIds);
+      if (onModelsChange) onModelsChange(sortedIds);
+      if (sortedIds.length > 0) {
+        setStatus(`Verified! ${sortedIds.length} compatible models detected (latest first).`);
+      } else {
+        setStatus('Key verified, but no compatible models found.');
+      }
     } catch (err) {
       setValid(false);
+      setStatus(`Error: ${err.message}`);
+      setModelIds([]);
+      if (onModelsChange) onModelsChange([]);
     } finally {
       setDetecting(false);
     }
-  }, []);
+  }, [onGroqModelsChange, onOpenRouterModelsChange]);
 
-  const debouncedVerifyCerebras = useCallback(
-    debounce((key) => handleVerifyProviderKey('cerebras', key), 600),
-    []
+  const debouncedVerifyGroq = useMemo(
+    () => debounce((key) => {
+      handleVerifyProviderKey('groq', key);
+    }, 600),
+    [handleVerifyProviderKey]
   );
-  const debouncedVerifyOpenAi = useCallback(
-    debounce((key) => handleVerifyProviderKey('openai', key), 600),
-    []
+  const debouncedVerifyOpenRouter = useMemo(
+    () => debounce((key) => {
+      handleVerifyProviderKey('openrouter', key);
+    }, 600),
+    [handleVerifyProviderKey]
   );
-  const debouncedVerifyDeepSeek = useCallback(
-    debounce((key) => handleVerifyProviderKey('deepseek', key), 600),
-    []
-  );
+
+  const hasHydratedInitialValues = useRef(false);
 
   useEffect(() => {
-    const savedGemini = localStorage.getItem('gemini_api_key');
-    const savedCerebras = localStorage.getItem('cerebras_api_key');
-    const savedOpenAi = localStorage.getItem('openai_api_key');
-    const savedDeepSeek = localStorage.getItem('deepseek_api_key');
-    const savedSelectedModel = localStorage.getItem('selectedModel');
+    if (hasHydratedInitialValues.current) return;
+    hasHydratedInitialValues.current = true;
 
-    if (savedCerebras) {
-      setCerebrasApiKey(savedCerebras);
-      onCerebrasApiKeyChange(savedCerebras);
-      handleVerifyProviderKey('cerebras', savedCerebras);
+    const savedGemini = typeof window !== 'undefined' ? localStorage.getItem('gemini_api_key') : null;
+    const savedGroq = typeof window !== 'undefined' ? localStorage.getItem('groq_api_key') : null;
+    const savedOpenRouter = typeof window !== 'undefined' ? localStorage.getItem('openrouter_api_key') : null;
+
+    if (savedGroq) {
+      onGroqApiKeyChange(savedGroq);
+      setTimeout(() => handleVerifyProviderKey('groq', savedGroq), 0);
     }
-    if (savedOpenAi) {
-      setOpenAiApiKey(savedOpenAi);
-      onOpenAiApiKeyChange(savedOpenAi);
-      handleVerifyProviderKey('openai', savedOpenAi);
-    }
-    if (savedDeepSeek) {
-      setDeepSeekApiKey(savedDeepSeek);
-      onDeepSeekApiKeyChange(savedDeepSeek);
-      handleVerifyProviderKey('deepseek', savedDeepSeek);
+    if (savedOpenRouter) {
+      onOpenRouterApiKeyChange(savedOpenRouter);
+      setTimeout(() => handleVerifyProviderKey('openrouter', savedOpenRouter), 0);
     }
 
     if (savedGemini) {
-      setApiKey(savedGemini);
       onApiKeyChange(savedGemini);
-      handleAutoDetectModels(savedGemini);
+      setTimeout(() => handleAutoDetectModels(savedGemini), 0);
     }
-
-    if (savedSelectedModel && DEFAULT_GEMINI_MODELS.some(m => m.id === savedSelectedModel)) {
-        setSelectedModel(savedSelectedModel);
-        onSelectedModelChange(savedSelectedModel);
-    } else if (DEFAULT_GEMINI_MODELS.length > 0) {
-        setSelectedModel(DEFAULT_GEMINI_MODELS[0].id);
-        onSelectedModelChange(DEFAULT_GEMINI_MODELS[0].id);
-    }
-
-  }, [onApiKeyChange, onCerebrasApiKeyChange, onOpenAiApiKeyChange, onDeepSeekApiKeyChange, onSelectedModelChange, handleAutoDetectModels, handleVerifyProviderKey]);
+  }, [onApiKeyChange, onGroqApiKeyChange, onOpenRouterApiKeyChange, handleAutoDetectModels, handleVerifyProviderKey]);
 
   const onGeminiChange = useCallback(
     (e) => {
@@ -256,47 +258,26 @@ export default function ApiKeyPanel({
     [onApiKeyChange, debouncedAutoDetect]
   );
 
-  const onCerebrasChange = useCallback(
+  const onGroqChange = useCallback(
     (e) => {
       const val = e.target.value;
-      setCerebrasApiKey(val);
-      localStorage.setItem('cerebras_api_key', val);
-      onCerebrasApiKeyChange(val);
-      debouncedVerifyCerebras(val);
+      setGroqApiKey(val);
+      localStorage.setItem('groq_api_key', val);
+      onGroqApiKeyChange(val);
+      debouncedVerifyGroq(val);
     },
-    [onCerebrasApiKeyChange, debouncedVerifyCerebras]
+    [onGroqApiKeyChange, debouncedVerifyGroq]
   );
 
-  const onOpenAiChange = useCallback(
+  const onOpenRouterChange = useCallback(
     (e) => {
       const val = e.target.value;
-      setOpenAiApiKey(val);
-      localStorage.setItem('openai_api_key', val);
-      onOpenAiApiKeyChange(val);
-      debouncedVerifyOpenAi(val);
+      setOpenRouterApiKey(val);
+      localStorage.setItem('openrouter_api_key', val);
+      onOpenRouterApiKeyChange(val);
+      debouncedVerifyOpenRouter(val);
     },
-    [onOpenAiApiKeyChange, debouncedVerifyOpenAi]
-  );
-
-  const onDeepSeekChange = useCallback(
-    (e) => {
-      const val = e.target.value;
-      setDeepSeekApiKey(val);
-      localStorage.setItem('deepseek_api_key', val);
-      onDeepSeekApiKeyChange(val);
-      debouncedVerifyDeepSeek(val);
-    },
-    [onDeepSeekApiKeyChange, debouncedVerifyDeepSeek]
-  );
-
-  const onModelChange = useCallback(
-    (e) => {
-      const val = e.target.value;
-      setSelectedModel(val);
-      localStorage.setItem('selectedModel', val);
-      onSelectedModelChange(val);
-    },
-    [onSelectedModelChange]
+    [onOpenRouterApiKeyChange, debouncedVerifyOpenRouter]
   );
 
   return (
@@ -336,7 +317,7 @@ export default function ApiKeyPanel({
 
         {isDetecting && (
           <span className="text-xs text-purple-400 font-semibold flex items-center gap-1">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Verifying...
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Verifying & detecting models...
           </span>
         )}
         {keyIsValid && !isDetecting && (
@@ -349,6 +330,11 @@ export default function ApiKeyPanel({
                 <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {autoDetectStatus}
             </p>
         )}
+        {keyIsValid && !autoDetectStatus.startsWith('Error') && autoDetectStatus && (
+            <p className="text-xs text-emerald-300/80 font-medium mt-1 flex items-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> {autoDetectStatus}
+            </p>
+        )}
         
         <p className="text-xs text-purple-300/80 leading-relaxed">
           Required — free, takes ~2 minutes at{' '}
@@ -357,16 +343,26 @@ export default function ApiKeyPanel({
           </a>
           . Use your existing Gmail account, no separate signup. Keys are stored for this browser session only and are not shared.
         </p>
+        {geminiModelIds.length > 0 && (
+          <details className="text-xs text-purple-300/70">
+            <summary className="cursor-pointer font-semibold text-purple-400 hover:text-purple-200">
+              Detected Gemini models ({geminiModelIds.length}, latest first)
+            </summary>
+            <ol className="mt-1 ml-4 list-decimal space-y-0.5 max-h-32 overflow-y-auto">
+              {geminiModelIds.map((m) => <li key={m} className="font-mono text-[11px]">{m}</li>)}
+            </ol>
+          </details>
+        )}
       </div>
 
-      {/* 2. DEEPSEEK CARD — FREE alternative with 64K tokens, handles both BOW and lesson plans */}
+      {/* 2. GROQ CARD — FREE, fast inference */}
       <div className="bg-[#0F1A1F] border border-[#2DD4BF]/40 rounded-2xl p-5 space-y-3 shadow-md">
         <div className="flex items-center justify-between">
           <label className="block text-sm sm:text-base font-bold text-teal-300 flex items-center gap-2">
-            <span>🧠</span> DeepSeek API Key <span className="text-teal-400 font-normal">(strongly recommended — FREE)</span>
+            <span>⚡</span> Groq API Key <span className="text-teal-400 font-normal">(strongly recommended — FREE)</span>
           </label>
           <button
-            onClick={() => openModal('deepseek')}
+            onClick={() => openModal('groq')}
             className="text-xs font-semibold text-teal-400 hover:text-teal-200 underline"
           >
             How to get a key?
@@ -376,92 +372,70 @@ export default function ApiKeyPanel({
             <input
                 type="password"
                 autoComplete="new-password"
-                value={deepSeekApiKey}
-                onChange={onDeepSeekChange}
-                placeholder="Paste your DeepSeek API key (free, 64K tokens)"
-                className="w-full bg-slate-900 border border-teal-800/60 rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-teal-500 focus:outline-none font-mono"
+                value={groqApiKey}
+                onChange={onGroqChange}
+                placeholder="Paste your Groq API key (free, fast inference)"
+                className={`w-full bg-slate-900 border rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:outline-none font-mono ${
+                  groqDetectStatus.startsWith('Error')
+                    ? 'border-red-500/60 focus:ring-red-500'
+                    : groqKeyIsValid
+                    ? 'border-emerald-500/60 focus:ring-emerald-500'
+                    : 'border-teal-800/60 focus:ring-teal-500'
+                }`}
             />
         </form>
-        {isDetectingDeepSeek && (
+        {isDetectingGroq && (
           <span className="text-xs text-teal-400 font-semibold flex items-center gap-1">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Verifying...
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Verifying & detecting models...
           </span>
         )}
-        {deepSeekKeyIsValid && !isDetectingDeepSeek && (
+        {groqKeyIsValid && !isDetectingGroq && (
           <span className="text-xs text-emerald-300 bg-emerald-950/60 border border-emerald-800 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Key Verified
           </span>
         )}
+        {groqDetectStatus.startsWith('Error') && (
+          <p className="text-xs text-red-400 font-medium mt-1 flex items-center gap-1">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {groqDetectStatus}
+          </p>
+        )}
+        {groqKeyIsValid && !groqDetectStatus.startsWith('Error') && groqDetectStatus && (
+          <p className="text-xs text-emerald-300/80 font-medium mt-1 flex items-center gap-1">
+            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> {groqDetectStatus}
+          </p>
+        )}
         <p className="text-xs text-teal-300/80 leading-relaxed">
-          <strong className="text-teal-200">FREE</strong> — no credit card required. DeepSeek has 64K output tokens, handles both BOW extraction and full lesson plan generation. If Gemini is busy or rate-limited, DeepSeek serves as your primary free fallback. Get a key at{' '}
+          <strong className="text-teal-200">FREE</strong> — no credit card required. Groq provides extremely fast inference on open-source models like Llama and Mixtral. Get a key at{' '}
           <a
-            href="https://platform.deepseek.com/api_keys"
+            href="https://console.groq.com/keys"
             target="_blank"
             rel="noreferrer"
             className="font-bold underline text-teal-300 hover:text-teal-100"
           >
-            platform.deepseek.com
+            console.groq.com
           </a>
           {' '}(~1 minute, just need an email).
         </p>
+        {groqModelIds.length > 0 && (
+          <details className="text-xs text-teal-300/70">
+            <summary className="cursor-pointer font-semibold text-teal-400 hover:text-teal-200">
+              Detected Groq models ({groqModelIds.length}, latest first)
+            </summary>
+            <ol className="mt-1 ml-4 list-decimal space-y-0.5 max-h-32 overflow-y-auto">
+              {groqModelIds.map((m) => <li key={m} className="font-mono text-[11px]">{m}</li>)}
+            </ol>
+          </details>
+        )}
       </div>
 
-      {/* 3. CEREBRAS CARD */}
-      <div className="bg-[#26150B] border border-[#C05621]/50 rounded-2xl p-5 space-y-3 shadow-md">
-        <div className="flex items-center justify-between">
-          <label className="block text-sm sm:text-base font-bold text-amber-400 flex items-center gap-2">
-            <span>⚡</span> Cerebras API Key <span className="text-amber-500 font-normal">(optional — fast but less reliable for structured output)</span>
-          </label>
-          <button
-            onClick={() => openModal('cerebras')}
-            className="text-xs font-semibold text-amber-500 hover:text-amber-200 underline"
-          >
-            How to get a key?
-          </button>
-        </div>
-        <form onSubmit={(e) => e.preventDefault()}>
-            <input type="text" name="username" autoComplete="username" className="hidden" tabIndex={-1} />
-            <input
-                type="password"
-                autoComplete="new-password"
-                value={cerebrasApiKey}
-                onChange={onCerebrasChange}
-                placeholder="Paste your Cerebras API key"
-                className="w-full bg-slate-900 border border-amber-900/60 rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-amber-500 focus:outline-none font-mono"
-            />
-        </form>
-        {isDetectingCerebras && (
-          <span className="text-xs text-amber-400 font-semibold flex items-center gap-1">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Verifying...
-          </span>
-        )}
-        {cerebrasKeyIsValid && !isDetectingCerebras && (
-          <span className="text-xs text-emerald-300 bg-emerald-950/60 border border-emerald-800 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
-            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Key Verified
-          </span>
-        )}
-        <p className="text-xs text-amber-300/80 leading-relaxed">
-          Fast inference speed, but less reliable for structured JSON output. Get a free key at{' '}
-          <a
-            href="https://cloud.cerebras.ai"
-            target="_blank"
-            rel="noreferrer"
-            className="font-bold underline text-amber-300 hover:text-amber-100"
-          >
-            cloud.cerebras.ai
-          </a>
-          {' '}(~1 minute).
-        </p>
-      </div>
-
-      {/* 4. OPENAI CARD */}
+      {/* 3. OPENROUTER CARD — access to many models */}
       <div className="bg-[#131B32] border border-[#3B82F6]/40 rounded-2xl p-5 space-y-3 shadow-md">
         <div className="flex items-center justify-between">
           <label className="block text-sm sm:text-base font-bold text-indigo-300 flex items-center gap-2">
-            <span>🔑</span> OpenAI API Key <span className="text-indigo-400 font-normal">(Optional — paid, final fallback)</span>
+            <span>🔀</span> OpenRouter API Key <span className="text-indigo-400 font-normal">(optional — access to GPT-4, Claude, and more)</span>
           </label>
           <button
-            onClick={() => openModal('openai')}
+            onClick={() => openModal('openrouter')}
             className="text-xs font-semibold text-indigo-400 hover:text-indigo-200 underline"
           >
             How to get a key?
@@ -471,29 +445,55 @@ export default function ApiKeyPanel({
             <input
                 type="password"
                 autoComplete="new-password"
-                value={openAiApiKey}
-                onChange={onOpenAiChange}
-                placeholder="sk-... (Used only if Gemini, DeepSeek, and Cerebras all fail)"
-                className="w-full bg-slate-900 border border-indigo-800/60 rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:outline-none font-mono"
+                value={openRouterApiKey}
+                onChange={onOpenRouterChange}
+                placeholder="Paste your OpenRouter API key"
+                className={`w-full bg-slate-900 border rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:outline-none font-mono ${
+                  openRouterDetectStatus.startsWith('Error')
+                    ? 'border-red-500/60 focus:ring-red-500'
+                    : openRouterKeyIsValid
+                    ? 'border-emerald-500/60 focus:ring-emerald-500'
+                    : 'border-indigo-800/60 focus:ring-indigo-500'
+                }`}
             />
         </form>
-        {isDetectingOpenAi && (
+        {isDetectingOpenRouter && (
           <span className="text-xs text-indigo-400 font-semibold flex items-center gap-1">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Verifying...
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Verifying & detecting models...
           </span>
         )}
-        {openAiKeyIsValid && !isDetectingOpenAi && (
+        {openRouterKeyIsValid && !isDetectingOpenRouter && (
           <span className="text-xs text-emerald-300 bg-emerald-950/60 border border-emerald-800 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Key Verified
           </span>
         )}
+        {openRouterDetectStatus.startsWith('Error') && (
+          <p className="text-xs text-red-400 font-medium mt-1 flex items-center gap-1">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {openRouterDetectStatus}
+          </p>
+        )}
+        {openRouterKeyIsValid && !openRouterDetectStatus.startsWith('Error') && openRouterDetectStatus && (
+          <p className="text-xs text-emerald-300/80 font-medium mt-1 flex items-center gap-1">
+            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> {openRouterDetectStatus}
+          </p>
+        )}
         <p className="text-xs text-indigo-300/80 leading-relaxed">
-          Last-resort fallback with the highest reliability and token capacity. Get a key at{' '}
-          <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer" className="font-bold underline text-indigo-300 hover:text-indigo-100">
-            platform.openai.com/api-keys
+          Provides access to a wide range of models including GPT-4, Claude, Gemini, and more through a single API. Get a key at{' '}
+          <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="font-bold underline text-indigo-300 hover:text-indigo-100">
+            openrouter.ai/keys
           </a>
           .
         </p>
+        {openRouterModelIds.length > 0 && (
+          <details className="text-xs text-indigo-300/70">
+            <summary className="cursor-pointer font-semibold text-indigo-400 hover:text-indigo-200">
+              Detected OpenRouter models ({openRouterModelIds.length}, latest first)
+            </summary>
+            <ol className="mt-1 ml-4 list-decimal space-y-0.5 max-h-32 overflow-y-auto">
+              {openRouterModelIds.map((m) => <li key={m} className="font-mono text-[11px]">{m}</li>)}
+            </ol>
+          </details>
+        )}
       </div>
 
       <div className="border border-dashed border-indigo-500/40 bg-indigo-950/20 rounded-2xl p-4 sm:p-5 text-indigo-200 text-xs sm:text-sm space-y-1.5">
@@ -502,19 +502,10 @@ export default function ApiKeyPanel({
           <span>How it works</span>
         </div>
         <p className="text-indigo-300/90 leading-relaxed pl-6">
-          Gemini is tried first with a dedicated retry loop. DeepSeek (FREE, 64K tokens) runs concurrently as the primary fallback. Cerebras and OpenAI are used as additional fallbacks if the others fail. Adding DeepSeek gives you a free, high-capacity backup — only Gemini is required.
+          Gemini is tried first with a dedicated retry loop. Groq (FREE, fast inference) runs concurrently as the primary fallback. OpenRouter is used as an additional fallback if the others fail. Only Gemini is required.
         </p>
       </div>
 
-      {/* MODEL SELECTION */}
-      <div className="pt-2">
-        <label className="block text-xs sm:text-sm font-semibold text-slate-300 mb-1.5">Primary Gemini Model</label>
-        <select value={selectedModel} onChange={onModelChange} className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm font-medium text-slate-200 focus:ring-2 focus:ring-[#F59E0B] focus:outline-none">
-          {availableModels.map((model) => (
-            <option key={model.id} value={model.id}>{model.name}</option>
-          ))}
-        </select>
-      </div>
       {isModalOpen && (
         <ApiKeyInstructionsModal
             provider={modalProvider}

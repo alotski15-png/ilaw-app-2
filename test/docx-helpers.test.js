@@ -7,13 +7,18 @@ describe('docx-helpers', () => {
     expect(formatDocxText(undefined)).toBe('');
   });
 
-  it('trims and strips markdown-like syntax', () => {
+  it('trims markdown-like syntax and preserves bold markers for DOCX rendering', () => {
     const input = "### Heading\n**bold**\n- item1\n- item2";
     const out = formatDocxText(input);
     expect(out).toContain('Heading');
-    expect(out).toContain('bold');
-    expect(out).not.toContain('**');
+    expect(out).toContain('**bold**');
     expect(out).not.toContain('- ');
+  });
+
+  it('converts indicator annotations to DOCX indicator format', () => {
+    const input = 'After assessment **(Indicator 5.1.2)** and review.';
+    const out = formatDocxText(input);
+    expect(out).toContain('**(indicator 9)**');
   });
 
   it('parses JSON arrays in bracketed strings', () => {
@@ -39,4 +44,5 @@ describe('docx-helpers', () => {
     expect(getOnlyName('Jane Doe')).toBe('Jane Doe');
     expect(getOnlyName('')).toBe('');
   });
+
 });

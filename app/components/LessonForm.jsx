@@ -1,6 +1,6 @@
 'use client';
 import React from 'react';
-import { FileText, UploadCloud, CheckCircle2, Loader2, AlertCircle, Sparkles } from 'lucide-react';
+import { FileText, UploadCloud, CheckCircle2, Loader2, AlertCircle, Sparkles, Info } from 'lucide-react';
 
 export default function LessonForm({
   formData,

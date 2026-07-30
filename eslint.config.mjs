@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    "check-*.js",
+    "extract-*.js",
+    "test-docx-api.js",
   ]),
 ]);
 
