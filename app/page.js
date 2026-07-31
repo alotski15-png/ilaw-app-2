@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { mapIndicatorToOrdinal } from '../lib/cot-indicators';
+import { mapIndicatorToOrdinal, COT_INDICATORS } from '@/lib/cot-indicators';
 import { showToast } from './components/Toast';
 import { 
   Sparkles, 
@@ -18,7 +18,11 @@ import {
   ShieldCheck,
   UploadCloud,
   Lightbulb,
-  Presentation
+  Presentation,
+  Lock,
+  Key,
+  Shield,
+  Image as ImageIcon
 } from 'lucide-react';
 
 import ApiKeyInstructionsModal from './components/ApiKeyInstructionsModal';
@@ -89,7 +93,7 @@ const IlawLogo = ({ className = "w-10 h-10" }) => (
       />
     </svg>
 
-    {/* Sparkle / AI Star floating near the top of the flame */}
+    {/* Sparkles / AI Star floating near the top of the flame */}
     <Sparkles className="w-4 h-4 text-amber-300 absolute -top-1 -right-1 z-20 animate-bounce" />
   </div>
 );
@@ -122,9 +126,12 @@ const hasMissingDesignation = (input) => {
 const renderBoldText = (text) => {
   if (typeof text !== 'string') return text;
 
+  // Only strip markdown list markers (single * or - followed by space) at line starts
+  // but NOT double asterisks (**) which are bold markers
   const cleaned = text
-    .replace(/^\*\s*/gm, '')
-    .replace(/^[\-*•]\s*/gm, '');
+    .replace(/^\*\s(?=\S)/gm, '')  // strip "* item" at line start
+    .replace(/^-\s(?=\S)/gm, '')    // strip "- item" at line start
+    .replace(/^•\s*/gm, '');         // strip "• item" at line start
 
   const parts = cleaned.split(/(\*\*.*?\*\*)/g);
   return parts.map((part, pIdx) => {
@@ -248,6 +255,7 @@ const renderSafeContent = (content, isStandardList = false) => {
     }
 
     // Helper to render a labelled line such as "Knowledge: ..." with the label bolded
+    // Also bolds inline labels like "ENRICHMENT:" that appear within the value text.
     const renderLabelledLine = (line, keyPrefixClass = 'text-[#1B365D]') => {
       const m = line.match(/^\s*([^:]{1,60}:)\s*([\s\S]*)$/);
       if (m) {
@@ -257,11 +265,29 @@ const renderSafeContent = (content, isStandardList = false) => {
         return (
           <div className="leading-snug">
             <span className={`font-bold ${keyPrefixClass}`}>{label}</span>
-            {rest ? <span className="ml-1">{formatFormattedText(rest)}</span> : null}
+            {rest ? <span className="ml-1">{renderInlineLabels(rest)}</span> : null}
           </div>
         );
       }
-      return <div className="leading-snug">{formatFormattedText(line)}</div>;
+      return <div className="leading-snug">{renderInlineLabels(line)}</div>;
+    };
+
+    // Helper to bold inline label prefixes (e.g., "ENRICHMENT:", "REMEDIATION:")
+    // that appear within the value portion of a line.
+    const renderInlineLabels = (text) => {
+      if (typeof text !== 'string') return formatFormattedText(text);
+      // Split on known label patterns like "ENRICHMENT:" or "REMEDIATION:"
+      const parts = text.split(/(ENRICHMENT:|REMEDIATION:)/g);
+      if (parts.length <= 1) return formatFormattedText(text);
+      const nodes = [];
+      for (let i = 0; i < parts.length; i++) {
+        if (parts[i] === 'ENRICHMENT:' || parts[i] === 'REMEDIATION:') {
+          nodes.push(<strong key={`il-${i}`} className="font-bold text-slate-900">{parts[i]}</strong>);
+        } else if (parts[i]) {
+          nodes.push(...[].concat(formatFormattedText(parts[i])));
+        }
+      }
+      return nodes;
     };
 
     // Special-case: Learning Objectives in KSA format often come as a single string like:
@@ -375,20 +401,135 @@ const toRoman = (num) => {
   return str;
 };
 
+// Helper to determine the current DepEd school year based on the current date.
+// DepEd school years typically start in late July/August.
+// If the current month is July (6, 0-indexed) or later, the SY is {year}-{year+1}.
+// Otherwise, the SY is {year-1}-{year}.
+const getCurrentSchoolYear = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth(); // 0-indexed (0 = January, 6 = July)
+  if (month >= 6) {
+    return `SY ${year}-${year + 1}`;
+  }
+  return `SY ${year - 1}-${year}`;
+};
+
+// PMES COT Rating Sheets info extracted from the 4 Annex E-2 docx files
+const PMES_COT_SHEETS = [
+  {
+    file: 'Annex E-2_COT Rating Sheet for Beginning towards Proficient Teacher (TI-TIII).docx',
+    title: 'Beginning towards Proficient Teacher (TI-TIII)',
+    tool: 'TEACHER I-III Classroom Observation Tool (COT) – Rating Sheet',
+  },
+  {
+    file: 'Annex E-2_COT Rating Sheet for Proficient Teacher (TIV-TVII).docx',
+    title: 'Proficient Teacher (TIV-TVII)',
+    tool: 'TEACHER IV-VII Classroom Observation Tool (COT) – Rating Sheet',
+  },
+  {
+    file: 'Annex E-2_COT Rating Sheet for Highly Proficient Teacher (MTI-MTII).docx',
+    title: 'Highly Proficient Teacher (MTI-MTII)',
+    tool: 'MASTER TEACHER I-II Classroom Observation Tool (COT) – Rating Sheet',
+  },
+  {
+    file: 'Annex E-2_COT Rating Sheet for Distinguished Teacher (MTIII-MTV).docx',
+    title: 'Distinguished Teacher (MTIII-MTV)',
+    tool: 'MASTER TEACHER III-V Classroom Observation Tool (COT) – Rating Sheet',
+  },
+];
+
+// Helper to suggest design styles based on grade level and subject.
+// Returns an array of { name, description, recommended } objects, ordered by relevance.
+const getSuggestedDesignStyles = (gradeLevel, subject) => {
+  const gradeNumMatch = (gradeLevel || '').match(/\d+/);
+  const gradeNum = gradeNumMatch ? parseInt(gradeNumMatch[0], 10) : 0;
+  const subjectLower = (subject || '').toLowerCase();
+
+  const isElementary = gradeNum > 0 && gradeNum <= 6;
+  const isJuniorHigh = gradeNum >= 7 && gradeNum <= 10;
+  const isSeniorHigh = gradeNum >= 11 && gradeNum <= 12;
+
+  const isSTEM = /math|science|physics|chemistry|biology|earth|calculus|statistics/i.test(subjectLower);
+  const isLanguage = /english|filipino|reading|writing|literature|grammar/i.test(subjectLower);
+  const isSocial = /social|history|araling|panlipunan|economics|culture/i.test(subjectLower);
+  const isArts = /arts|music|pe|physical|education|esp|values/i.test(subjectLower);
+  const isTech = /technology|computer|ict|tle|home|economics/i.test(subjectLower);
+
+  const allStyles = [
+    { name: 'Modern Educational', description: 'Clean & Professional' },
+    { name: 'Playful Elementary', description: 'Colorful & Fun' },
+    { name: 'Professional Academic', description: 'Formal & Structured' },
+    { name: 'Creative Visual', description: 'Visual & Engaging' },
+  ];
+
+  let recommended = [];
+
+  // Grade-based recommendations
+  if (isElementary) {
+    // Elementary: playful and creative first
+    recommended = ['Playful Elementary', 'Creative Visual', 'Modern Educational', 'Professional Academic'];
+  } else if (isJuniorHigh) {
+    // Junior High: modern and creative
+    if (isSTEM) {
+      recommended = ['Modern Educational', 'Professional Academic', 'Creative Visual', 'Playful Elementary'];
+    } else if (isLanguage || isArts) {
+      recommended = ['Creative Visual', 'Modern Educational', 'Playful Elementary', 'Professional Academic'];
+    } else {
+      recommended = ['Modern Educational', 'Creative Visual', 'Professional Academic', 'Playful Elementary'];
+    }
+  } else if (isSeniorHigh) {
+    // Senior High: professional and modern
+    if (isSTEM || isTech) {
+      recommended = ['Professional Academic', 'Modern Educational', 'Creative Visual', 'Playful Elementary'];
+    } else if (isLanguage || isArts) {
+      recommended = ['Modern Educational', 'Creative Visual', 'Professional Academic', 'Playful Elementary'];
+    } else {
+      recommended = ['Professional Academic', 'Modern Educational', 'Creative Visual', 'Playful Elementary'];
+    }
+  } else {
+    // No grade specified: default order
+    recommended = ['Modern Educational', 'Creative Visual', 'Professional Academic', 'Playful Elementary'];
+  }
+
+  // Return styles in recommended order with "recommended" flag on the first
+  return recommended.map((name, idx) => {
+    const style = allStyles.find((s) => s.name === name) || allStyles[0];
+    return { ...style, recommended: idx === 0 };
+  });
+};
+
+// Helper to determine the proficiency level of a teacher based on their designation.
+// Returns one of: 'Beginning towards Proficient Teacher (TI-TIII)', 'Proficient Teacher (TIV-TVII)',
+// 'Highly Proficient Teacher (MTI-MTII)', 'Distinguished Teacher (MTIII-MTV)', or 'Unknown'.
+const getProficiencyLevel = (designation) => {
+  if (!designation) return 'Unknown';
+  const d = designation.toUpperCase();
+  if (/\bMT\s*(III|IV|V|3|4|5)\b/i.test(d) || /\bMASTER\s*TEACHER\s*(III|IV|V|3|4|5)\b/i.test(d)) {
+    return 'Distinguished Teacher (MTIII-MTV)';
+  }
+  if (/\bMT\s*(I|II|1|2)\b/i.test(d) || /\bMASTER\s*TEACHER\s*(I|II|1|2)\b/i.test(d)) {
+    return 'Highly Proficient Teacher (MTI-MTII)';
+  }
+  if (/\bT\s*(IV|V|VI|VII|4|5|6|7)\b/i.test(d) || /\bTEACHER\s*(IV|V|VI|VII|4|5|6|7)\b/i.test(d)) {
+    return 'Proficient Teacher (TIV-TVII)';
+  }
+  if (/\bT\s*(I|II|III|1|2|3)\b/i.test(d) || /\bTEACHER\s*(I|II|III|1|2|3)\b/i.test(d)) {
+    return 'Beginning towards Proficient Teacher (TI-TIII)';
+  }
+  return 'Unknown';
+};
+
 
 export default function Home() {
   const [instructionModalProvider, setInstructionModalProvider] = useState(null);
   // States for API keys, now managed by ApiKeyPanel
   const [currentApiKey, setCurrentApiKey] = useState('');
-  const [currentGroqApiKey, setCurrentGroqApiKey] = useState('');
-  const [currentOpenRouterApiKey, setCurrentOpenRouterApiKey] = useState('');
 
-  // Detected model lists (latest-first) for each provider — populated when
+  // Detected model lists (latest-first) for Gemini — populated when
   // the API key is verified. Passed to the server so the pipeline uses only
   // models that are actually compatible with the user's key.
   const [currentGeminiModels, setCurrentGeminiModels] = useState([]);
-  const [currentGroqModels, setCurrentGroqModels] = useState([]);
-  const [currentOpenRouterModels, setCurrentOpenRouterModels] = useState([]);
 
   // New state variables for metadata extraction
   const [isExtractingMetadata, setIsExtractingMetadata] = useState(false);
@@ -408,6 +549,11 @@ export default function Home() {
   const [customLearnerContextText, setCustomLearnerContextText] = useState('');
   const [includeCotIndicators, setIncludeCotIndicators] = useState(false);
 
+  // COT Warning Modal State
+  const [showCotWarningModal, setShowCotWarningModal] = useState(false);
+  const [cotWarningCountdown, setCotWarningCountdown] = useState(5);
+  const cotWarningTimerRef = useRef(null);
+
   // Disclaimer Modal State
   const [showDisclaimerModal, setShowDisclaimerModal] = useState(true);
   const [disclaimerAgreed, setDisclaimerAgreed] = useState(false);
@@ -421,6 +567,55 @@ export default function Home() {
   const [bowSupportCountdown, setBowSupportCountdown] = useState(5);
   const [pendingBowFile, setPendingBowFile] = useState(null);
   const bowSupportTimerRef = useRef(null);
+
+  // Token System State
+  const [tokens, setTokens] = useState(0);
+  const [isInitialTokenLoadComplete, setIsInitialTokenLoadComplete] = useState(false);
+
+  // Token System State (client-side hydration)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('bow_tokens');
+        if (saved !== null) { // Check for null, not just falsy (as '0' is falsy)
+          setTokens(parseInt(saved, 10));
+        }
+      } catch (e) {
+        console.error("Error reading tokens from localStorage", e);
+      } finally {
+        setIsInitialTokenLoadComplete(true);
+      }
+    } else {
+      // For SSR, assume tokens is 0 and mark initial load as complete
+      setIsInitialTokenLoadComplete(true);
+    }
+  }, []);
+
+  // Receipt Upload Modal State
+  const [showReceiptModal, setShowReceiptModal] = useState(false);
+  const [receiptFile, setReceiptFile] = useState(null);
+  const [receiptFileName, setReceiptFileName] = useState('');
+  const [isVerifyingReceipt, setIsVerifyingReceipt] = useState(false);
+  const [receiptStatus, setReceiptStatus] = useState('idle'); // idle | verifying | verified | rejected | error
+  const [receiptMessage, setReceiptMessage] = useState('');
+  const [receiptDetails, setReceiptDetails] = useState('');
+
+  // Admin Password Modal State
+  const [showAdminModal, setShowAdminModal] = useState(false);
+  const [adminPassword, setAdminPassword] = useState('');
+  const [adminPasswordError, setAdminPasswordError] = useState('');
+  const [isAdminUnlocked, setIsAdminUnlocked] = useState(false);
+
+  // Admin lock state (client-side hydration)
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('bow_admin_unlocked') === 'true') {
+        setIsAdminUnlocked(true);
+      }
+    } catch {
+      // On error, admin remains locked
+    }
+  }, []);
 
   const [formData, setFormData] = useState({
     lessonName: '',
@@ -437,7 +632,6 @@ export default function Home() {
     learningCompetency: '',
     contentStandards: '',
     performanceStandards: '',
-    generalObjectives: '',
     learnerContext: '',
     additionalPrompts: '',
     resources: [],
@@ -455,6 +649,8 @@ export default function Home() {
   const [generatingSlides, setGeneratingSlides] = useState(false);
   const [slideDeckError, setSlideDeckError] = useState('');
   const [downloadingSlides, setDownloadingSlides] = useState(false);
+  const [slideGenerationHistory, setSlideGenerationHistory] = useState([]); // Track generation timestamps
+  const [slideCount] = useState(20); // Fixed at max 20 slides per deck
 
   // Support timer state
   const [showSupportTimer, setShowSupportTimer] = useState(false);
@@ -558,6 +754,27 @@ export default function Home() {
     };
   }, [showBowSupportGate, bowSupportCountdown]);
 
+  // Token persistence effect - save to localStorage whenever tokens change
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('bow_tokens', String(tokens));
+    }
+  }, [tokens]);
+
+  // Secret admin keyboard shortcut: Ctrl+Shift+I
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i')) {
+        e.preventDefault();
+        setShowAdminModal(true);
+        setAdminPassword('');
+        setAdminPasswordError('');
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
   const proceedWithGeneration = useCallback(async () => {
     console.log('[DEBUG] Starting generation...');
     // Display a loading message immediately so the UI shows it without waiting for the effect to run
@@ -606,6 +823,10 @@ export default function Home() {
         ? `AUTOMATIC LESSON TITLE GENERATION: No lesson title was provided by the user. Automatically generate a concise, professional, and engaging "lessonTitle" for the JSON output header based on the subject (${formData.subject}) and learning competency.`
         : '';
 
+      // If the user has unlocked BOW extraction (has tokens or admin bypass),
+      // automatically enable COT indicators as a premium complement for the best detailed lesson plan result.
+      const effectiveIncludeCotIndicators = includeCotIndicators || (tokens > 0 || isAdminUnlocked);
+
       const payload = {
         lessonName: formData.lessonName,
         subject: formData.subject,
@@ -626,12 +847,8 @@ export default function Home() {
         resources: finalResources,
         references: finalReferences,
         geminiApiKey: currentApiKey,
-        groqApiKey: currentGroqApiKey,
-        openRouterApiKey: currentOpenRouterApiKey,
-        includeCotIndicators,
+        includeCotIndicators: effectiveIncludeCotIndicators,
         geminiModels: currentGeminiModels,
-        groqModels: currentGroqModels,
-        openRouterModels: currentOpenRouterModels,
         autoTitlePrompt,
       };
 
@@ -676,7 +893,7 @@ export default function Home() {
         abortControllerRef.current = null;
       }
     }
-  }, [currentApiKey, currentGroqApiKey, currentOpenRouterApiKey, currentGeminiModels, currentGroqModels, currentOpenRouterModels, customLearnerContextText, customReferenceText, customResourceText, formData, includeCotIndicators]);
+  }, [currentApiKey, currentGeminiModels, customLearnerContextText, customReferenceText, customResourceText, formData, includeCotIndicators]);
 
   // Keep a ref to the latest generation function so the timer effect
   // doesn't restart when formData or other deps change.
@@ -716,11 +933,36 @@ export default function Home() {
     };
   }, [showSupportTimer, supportCountdown]);
 
+  // COT Warning timer countdown effect
+  useEffect(() => {
+    if (!showCotWarningModal) {
+      return;
+    }
+
+    if (cotWarningCountdown > 0) {
+      cotWarningTimerRef.current = setTimeout(() => {
+        setCotWarningCountdown((prev) => prev - 1);
+      }, 1000);
+      return () => {
+        if (cotWarningTimerRef.current) {
+          clearTimeout(cotWarningTimerRef.current);
+        }
+      };
+    }
+
+    // Countdown finished - do NOT auto-close; just enable the continue button
+    return () => {
+      if (cotWarningTimerRef.current) {
+        clearTimeout(cotWarningTimerRef.current);
+      }
+    };
+  }, [showCotWarningModal, cotWarningCountdown]);
+
   // Mode: 'click' (open file picker after) or 'drop' (process dropped file after)
   const [bowGateMode, setBowGateMode] = useState('click');
   const isProceedingRef = useRef(false);
 
-  // Function to show support gate when user clicks the upload area
+  // Function to handle BOW upload click - check tokens first
   const handleUploadClick = (e) => {
     // If we're programmatically opening the file picker, don't show the gate again
     if (isProceedingRef.current) {
@@ -730,59 +972,147 @@ export default function Home() {
     // Prevent the hidden file input from opening immediately
     e.preventDefault();
     e.stopPropagation();
+    
+    // Check if user has tokens or is admin bypassed
+    if (tokens < 1 && !isAdminUnlocked) {
+      // No tokens - show receipt upload modal
+      setShowReceiptModal(true);
+      setReceiptStatus('idle');
+      setReceiptMessage('');
+      setReceiptDetails('');
+      setReceiptFile(null);
+      setReceiptFileName('');
+      return;
+    }
+    
+    // Has tokens - proceed with file picker
     setBowGateMode('click');
-    setShowBowSupportGate(true);
-    setBowSupportCountdown(5);
+    isProceedingRef.current = true;
+    const fileInput = document.getElementById('bow-file-input');
+    if (fileInput) {
+      fileInput.click();
+    }
   };
 
-  // Function to intercept dropped BOW file — show support gate first
+  // Function to intercept dropped BOW file — check tokens first
   const interceptBowFile = (file) => {
     if (file && file.type === 'application/pdf') {
+      if (tokens < 1 && !isAdminUnlocked) {
+        // No tokens - show receipt upload modal
+        setShowReceiptModal(true);
+        setReceiptStatus('idle');
+        setReceiptMessage('');
+        setReceiptDetails('');
+        setReceiptFile(null);
+        setReceiptFileName('');
+        return;
+      }
+      // Has tokens - process dropped file
       setPendingBowFile(file);
       setBowGateMode('drop');
-      setShowBowSupportGate(true);
-      setBowSupportCountdown(5);
+      processBowFile(file);
+      extractBowMetadata(file);
+      setPendingBowFile(null);
     } else if (file) {
       showToast({ message: 'Please upload a valid PDF file.', type: 'error' });
     }
   };
 
-  // Function to proceed after support gate — either open file picker or process dropped file
-  const proceedWithBowFile = async () => {
-    setShowBowSupportGate(false);
-    setBowSupportCountdown(5);
-
-    if (bowGateMode === 'click') {
-      // Open the file picker now — set flag to prevent re-triggering the gate
-      isProceedingRef.current = true;
-      const fileInput = document.getElementById('bow-file-input');
-      if (fileInput) {
-        fileInput.click();
+  // ===== RECEIPT UPLOAD & VERIFICATION HANDLERS =====
+  const handleReceiptUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const validTypes = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp'];
+      if (!validTypes.includes(file.type)) {
+        showToast({ message: 'Please upload a valid image file (JPEG, PNG, or WebP).', type: 'error' });
+        return;
       }
-    } else if (bowGateMode === 'drop' && pendingBowFile) {
-      // Process the dropped file
-      processBowFile(pendingBowFile);
-      await extractBowMetadata(pendingBowFile);
-      setPendingBowFile(null);
+      setReceiptFile(file);
+      setReceiptFileName(file.name);
+      setReceiptStatus('idle');
+      setReceiptMessage('');
+      setReceiptDetails('');
     }
   };
 
-  // Function to cancel BOW upload
-  const cancelBowUpload = () => {
-    setShowBowSupportGate(false);
-    setBowSupportCountdown(5);
-    setPendingBowFile(null);
-    // Reset the file input so the same file can be selected again
-    const fileInput = document.getElementById('bow-file-input');
-    if (fileInput) fileInput.value = '';
+  const handleVerifyReceipt = async () => {
+    if (!receiptFile) {
+      showToast({ message: 'Please upload a receipt image first.', type: 'error' });
+      return;
+    }
+
+    if (!currentApiKey) {
+      showToast({ message: 'Please enter an API Key first.', type: 'error' });
+      return;
+    }
+
+    setIsVerifyingReceipt(true);
+    setReceiptStatus('verifying');
+    setReceiptMessage('Analyzing your receipt...');
+
+    try {
+      const payload = new FormData();
+      payload.append('apiKey', currentApiKey);
+      payload.append('receiptFile', receiptFile);
+
+      const res = await fetch('/api/verify-receipt', {
+        method: 'POST',
+        body: payload,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to verify receipt.');
+      }
+
+      if (data.verified) {
+        setReceiptStatus('verified');
+        setReceiptMessage('Receipt verified successfully! 🎉');
+        setReceiptDetails(`You have been granted ${data.tokensGranted} tokens. You can now use BOW extraction.`);
+        // Grant tokens
+        setTokens(prev => (prev || 0) + data.tokensGranted);
+      } else {
+        setReceiptStatus('rejected');
+        setReceiptMessage('Receipt could not be verified.');
+        setReceiptDetails(data.reason || 'Please ensure you uploaded a clear GCash payment screenshot showing the ₱199 payment.');
+      }
+    } catch (err) {
+      console.error('Error verifying receipt:', err);
+      setReceiptStatus('error');
+      setReceiptMessage('Verification failed.');
+      setReceiptDetails(err.message || 'Please try again with a clearer image.');
+    } finally {
+      setIsVerifyingReceipt(false);
+    }
   };
 
+  const handleCloseReceiptModal = () => {
+    setShowReceiptModal(false);
+    setReceiptFile(null);
+    setReceiptFileName('');
+    setReceiptStatus('idle');
+    setReceiptMessage('');
+    setReceiptDetails('');
+  };
 
+  // ===== ADMIN PASSWORD HANDLER =====
+  const handleAdminPasswordSubmit = () => {
+    if (adminPassword === 'Mabbie23') {
+      setShowAdminModal(false);
+      setAdminPassword('');
+      setAdminPasswordError('');
+      setIsAdminUnlocked(true);
+      showToast({ message: 'Admin bypass successful! Unlimited tokens granted.', type: 'success' });
+    } else {
+      setAdminPasswordError('Incorrect password. Access denied.');
+    }
+  };
 
   const extractBowMetadata = async (file) => {
     if (!file) return;
 
-    if (!currentApiKey && !currentGroqApiKey && !currentOpenRouterApiKey) {
+    if (!currentApiKey) {
       setMetadataExtractionError('Please enter an API Key to extract BOW metadata.');
       return;
     }
@@ -793,11 +1123,7 @@ export default function Home() {
     try {
       const payload = new FormData();
       payload.append('apiKey', currentApiKey);
-      payload.append('groqApiKey', currentGroqApiKey);
-      payload.append('openRouterApiKey', currentOpenRouterApiKey);
       payload.append('geminiModels', JSON.stringify(currentGeminiModels));
-      payload.append('groqModels', JSON.stringify(currentGroqModels));
-      payload.append('openRouterModels', JSON.stringify(currentOpenRouterModels));
       payload.append('bowFile', file);
 
       const res = await fetch('/api/extract-bow-metadata', {
@@ -907,8 +1233,13 @@ export default function Home() {
   };
 
   const handleLoadEntries = async () => {
-    if (!currentApiKey && !currentGroqApiKey && !currentOpenRouterApiKey) {
+    if (!currentApiKey) {
       showToast({ message: 'Please enter an API Key in the API Configuration section.', type: 'error' });
+      return;
+    }
+
+    if (!bowFile) {
+      showToast({ message: 'Please upload a BOW PDF first.', type: 'error' });
       return;
     }
 
@@ -918,11 +1249,7 @@ export default function Home() {
     try {
       const payload = new FormData();
       payload.append('apiKey', currentApiKey);
-      payload.append('groqApiKey', currentGroqApiKey);
-      payload.append('openRouterApiKey', currentOpenRouterApiKey);
       payload.append('geminiModels', JSON.stringify(currentGeminiModels));
-      payload.append('groqModels', JSON.stringify(currentGroqModels));
-      payload.append('openRouterModels', JSON.stringify(currentOpenRouterModels));
       payload.append('term', formData.term);
       payload.append('week', formData.week);
       payload.append('subject', formData.subject);
@@ -954,8 +1281,12 @@ export default function Home() {
       }));
 
       setExtractionNote(`Extracted and isolated standards for ${formData.week} successfully!`);
+      
+      // Deduct 1 token on successful extraction (tokens are not reduced on failure)
+      setTokens(prev => Math.max(0, (prev || 0) - 1));
     } catch (err) {
       showToast({ message: `Extraction failed: ${err.message}`, type: 'error' });
+      // Tokens are NOT reduced on failure
     } finally {
       setIsExtracting(false);
     }
@@ -1059,7 +1390,7 @@ export default function Home() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!currentApiKey && !currentGroqApiKey && !currentOpenRouterApiKey) {
+    if (!currentApiKey) {
       showToast({ message: 'Please enter an API Key in the API Configuration section above.', type: 'error' });
       return;
     }
@@ -1409,14 +1740,69 @@ export default function Home() {
     }
   };
 
+  // Check if user can generate slides based on 24h rolling quota
+  const canGenerateSlides = () => {
+    if (slideGenerationHistory.length === 0) return true;
+    
+    const now = Date.now();
+    const twentyFourHours = 24 * 60 * 60 * 1000;
+    
+    // Filter out entries older than 24 hours
+    const recentGenerations = slideGenerationHistory.filter(timestamp => {
+      return (now - timestamp) < twentyFourHours;
+    });
+    
+    // Update history to remove old entries
+    if (recentGenerations.length !== slideGenerationHistory.length) {
+      setSlideGenerationHistory(recentGenerations);
+    }
+    
+    // Allow up to 10 generations per day
+    return recentGenerations.length < 10;
+  };
+
+  const getTimeUntilNextGeneration = () => {
+    if (slideGenerationHistory.length === 0) return null;
+    
+    const now = Date.now();
+    const twentyFourHours = 24 * 60 * 60 * 1000;
+    
+    // Find the oldest generation that's still within the 24h window
+    const oldestTimestamp = slideGenerationHistory[0];
+    const timePassed = now - oldestTimestamp;
+    const timeRemaining = twentyFourHours - timePassed;
+    
+    if (timeRemaining <= 0) return null;
+    
+    // Convert to hours and minutes
+    const hours = Math.floor(timeRemaining / (60 * 60 * 1000));
+    const minutes = Math.floor((timeRemaining % (60 * 60 * 1000)) / (60 * 1000));
+    
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+    return `${minutes}m`;
+  };
+
   const handleGenerateSlides = async () => {
     if (!lessonPlan) {
       showToast({ message: 'Generate a lesson plan first before creating slides.', type: 'error' });
       return;
     }
 
-    if (!currentApiKey && !currentGroqApiKey && !currentOpenRouterApiKey) {
+    if (!currentApiKey) {
       showToast({ message: 'Please enter an API key before generating a slide deck.', type: 'error' });
+      return;
+    }
+
+    // Check quota before generating
+    if (!canGenerateSlides()) {
+      const timeLeft = getTimeUntilNextGeneration();
+      showToast({ 
+        message: `Daily slide generation quota reached (~10 decks/day). Next generation available in ${timeLeft || '24h'}.`, 
+        type: 'error',
+        duration: 5000
+      });
       return;
     }
 
@@ -1425,6 +1811,28 @@ export default function Home() {
     setSlideDeck(null);
 
     try {
+      // Get selected session index
+      const sessionSelect = document.getElementById('slide-session-select');
+      const sessionIndex = sessionSelect ? parseInt(sessionSelect.value, 10) : 0;
+
+      // Get slide count
+      // const slideCountSlider = document.getElementById('slide-count-slider');
+      // const slideCount = slideCountSlider ? parseInt(slideCountSlider.value, 10) : 20; // Use the state variable directly
+
+      // Get design style
+      const designStyleRadios = document.getElementsByName('designStyle');
+      let designStyle = 'Modern Educational';
+      for (const radio of designStyleRadios) {
+        if (radio.checked) {
+          designStyle = radio.value;
+          break;
+        }
+      }
+
+      // Get additional prompt
+      const additionalPromptTextarea = document.getElementById('slide-additional-prompt');
+      const additionalPrompt = additionalPromptTextarea ? additionalPromptTextarea.value.trim() : '';
+
       const response = await fetch('/api/generate-slides', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1433,11 +1841,11 @@ export default function Home() {
           snapshotData,
           formData,
           geminiModels: currentGeminiModels,
-          groqModels: currentGroqModels,
-          openRouterModels: currentOpenRouterModels,
           geminiApiKey: currentApiKey,
-          groqApiKey: currentGroqApiKey,
-          openRouterApiKey: currentOpenRouterApiKey,
+          sessionIndex,
+          slideCount,
+          designStyle,
+          additionalPrompt,
         }),
       });
 
@@ -1448,6 +1856,10 @@ export default function Home() {
 
       const result = await response.json();
       setSlideDeck(result.slideDeck || result);
+      
+      // Record successful generation timestamp for quota tracking
+      setSlideGenerationHistory(prev => [...prev, Date.now()]);
+      
       showToast({ message: 'Slide deck outline generated successfully.', type: 'success' });
     } catch (err) {
       console.error('Error generating slides:', err);
@@ -1472,91 +1884,435 @@ export default function Home() {
       pptx.subject = 'Lesson slide deck';
       pptx.title = slideDeck.deckTitle || 'Lesson Slide Deck';
 
+      // Use theme colors from the AI or fall back to defaults
+      const themeColors = slideDeck.themeColors || {
+        primary: '1B365D',
+        secondary: 'F59E0B',
+        accent: '4B5563',
+        background: 'F8FAFC',
+        text: '111827',
+      };
+
       pptx.theme = {
         name: 'ilaw',
         colorScheme: {
-          accent1: '1B365D',
-          accent2: 'F59E0B',
-          accent3: '4B5563',
+          accent1: themeColors.primary,
+          accent2: themeColors.secondary,
+          accent3: themeColors.accent,
           accent4: 'E2E8F0',
-          accent5: 'F8FAFC',
-          accent6: '111827',
-          hyperlink: { color: '1B365D' },
-          folHlink: { color: '1B365D' },
+          accent5: themeColors.background,
+          accent6: themeColors.text,
+          hyperlink: { color: themeColors.primary },
+          folHlink: { color: themeColors.primary },
         },
       };
 
+      // ===== TITLE SLIDE =====
       const titleSlide = pptx.addSlide();
-      titleSlide.background = { color: 'F8FAFC' };
-      titleSlide.addText(slideDeck.deckTitle || 'Lesson Slide Deck', {
-        x: 0.5,
-        y: 1.2,
-        w: 12,
-        h: 0.8,
-        fontSize: 26,
-        bold: true,
-        color: '1B365D',
-      });
-      titleSlide.addText(slideDeck.subtitle || snapshotData?.subject || 'Generated with IlawCraft', {
-        x: 0.5,
-        y: 2.1,
-        w: 12,
-        h: 0.5,
-        fontSize: 16,
-        color: '4B5563',
-      });
-      titleSlide.addText('Prepared for classroom delivery', {
-        x: 0.5,
-        y: 3.0,
-        w: 12,
-        h: 0.45,
-        fontSize: 14,
-        color: '111827',
+      titleSlide.background = { color: themeColors.background };
+
+      // Decorative accent bar at the top
+      titleSlide.addShape(pptx.ShapeType.rect, {
+        x: 0,
+        y: 0,
+        w: 13.33,
+        h: 0.15,
+        fill: { color: themeColors.secondary },
+        line: { type: 'none' },
       });
 
-      slideDeck.slides.forEach((slide) => {
+      // Decorative accent bar at the bottom
+      titleSlide.addShape(pptx.ShapeType.rect, {
+        x: 0,
+        y: 7.35,
+        w: 13.33,
+        h: 0.15,
+        fill: { color: themeColors.secondary },
+        line: { type: 'none' },
+      });
+
+      // Left accent rectangle
+      titleSlide.addShape(pptx.ShapeType.rect, {
+        x: 0,
+        y: 0.15,
+        w: 0.3,
+        h: 7.2,
+        fill: { color: themeColors.primary },
+        line: { type: 'none' },
+      });
+
+      // Title text
+      titleSlide.addText(slideDeck.deckTitle || 'Lesson Slide Deck', {
+        x: 1.0,
+        y: 1.5,
+        w: 11.5,
+        h: 1.0,
+        fontSize: 32,
+        bold: true,
+        color: themeColors.primary,
+        fontFace: 'Arial',
+      });
+
+      // Subtitle
+      titleSlide.addText(slideDeck.subtitle || snapshotData?.subject || 'Generated with IlawCraft', {
+        x: 1.0,
+        y: 2.6,
+        w: 11.5,
+        h: 0.6,
+        fontSize: 18,
+        color: themeColors.accent,
+        fontFace: 'Arial',
+      });
+
+      // Decorative line under subtitle
+      titleSlide.addShape(pptx.ShapeType.line, {
+        x: 1.0,
+        y: 3.3,
+        w: 3.0,
+        h: 0,
+        line: { color: themeColors.secondary, width: 3 },
+      });
+
+      // Footer text
+      titleSlide.addText('Prepared for classroom delivery', {
+        x: 1.0,
+        y: 5.5,
+        w: 11.5,
+        h: 0.5,
+        fontSize: 14,
+        color: themeColors.text,
+        fontFace: 'Arial',
+      });
+
+      // IlawCraft branding
+      titleSlide.addText('IlawCraft', {
+        x: 10.5,
+        y: 6.8,
+        w: 2.5,
+        h: 0.4,
+        fontSize: 12,
+        bold: true,
+        color: themeColors.secondary,
+        align: 'right',
+        fontFace: 'Arial',
+      });
+
+      // ===== CONTENT SLIDES =====
+      slideDeck.slides.forEach((slide, slideIdx) => {
         const contentSlide = pptx.addSlide();
-        contentSlide.background = { color: 'FFFFFF' };
+        const slideAccentColor = slide.accentColor || themeColors.secondary;
+        const isTitleSlide = slide.layout === 'title';
+        const isImageFocus = slide.layout === 'image-focus';
+        const isActivity = slide.layout === 'activity';
+        const isSummary = slide.layout === 'summary';
+
+        // Background color based on layout
+        if (isTitleSlide) {
+          contentSlide.background = { color: themeColors.primary };
+        } else if (isSummary) {
+          contentSlide.background = { color: themeColors.background };
+        } else {
+          contentSlide.background = { color: 'FFFFFF' };
+        }
+
+        // Top accent bar
+        contentSlide.addShape(pptx.ShapeType.rect, {
+          x: 0,
+          y: 0,
+          w: 13.33,
+          h: 0.12,
+          fill: { color: slideAccentColor },
+          line: { type: 'none' },
+        });
+
+        // Left accent bar
+        contentSlide.addShape(pptx.ShapeType.rect, {
+          x: 0,
+          y: 0.12,
+          w: 0.15,
+          h: 7.38,
+          fill: { color: isTitleSlide ? themeColors.secondary : themeColors.primary },
+          line: { type: 'none' },
+        });
+
+        // Slide number badge (bottom right)
+        contentSlide.addShape(pptx.ShapeType.ellipse, {
+          x: 12.3,
+          y: 6.8,
+          w: 0.6,
+          h: 0.6,
+          fill: { color: slideAccentColor },
+          line: { type: 'none' },
+        });
+        contentSlide.addText(String(slideIdx + 1), {
+          x: 12.3,
+          y: 6.8,
+          w: 0.6,
+          h: 0.6,
+          fontSize: 14,
+          bold: true,
+          color: 'FFFFFF',
+          align: 'center',
+          valign: 'middle',
+          fontFace: 'Arial',
+        });
+
+        // Title text
+        const titleColor = isTitleSlide ? 'FFFFFF' : themeColors.primary;
         contentSlide.addText(slide.title, {
           x: 0.6,
           y: 0.4,
-          w: 12.2,
-          h: 0.6,
-          fontSize: 24,
+          w: 11.5,
+          h: 0.7,
+          fontSize: isTitleSlide ? 30 : 24,
           bold: true,
-          color: '1B365D',
+          color: titleColor,
+          fontFace: 'Arial',
         });
+
+        // Subtitle
         if (slide.subtitle) {
           contentSlide.addText(slide.subtitle, {
             x: 0.6,
-            y: 1.0,
-            w: 12.2,
+            y: 1.15,
+            w: 11.5,
             h: 0.45,
             fontSize: 14,
-            color: '4B5563',
+            color: isTitleSlide ? 'E2E8F0' : themeColors.accent,
+            fontFace: 'Arial',
           });
         }
 
-        const bullets = (slide.bullets || []).map((bullet) => `• ${bullet}`);
-        contentSlide.addText(bullets.join('\n'), {
-          x: 0.95,
-          y: 1.65,
-          w: 11.2,
-          h: 3.8,
-          fontSize: 18,
-          color: '111827',
-          breakLine: true,
-          margin: 0.08,
+        // Decorative line under title
+        contentSlide.addShape(pptx.ShapeType.line, {
+          x: 0.6,
+          y: 1.7,
+          w: 2.5,
+          h: 0,
+          line: { color: slideAccentColor, width: 2 },
         });
 
+        // Handle full-slide images (Gemini 3 Pro Image / 3.1 Flash Image renders)
+        if (slide.isFullSlideImage && slide.generatedImageUrl) {
+          // Full-slide rendered image occupies the entire slide
+          try {
+            contentSlide.addImage({
+              x: 0,
+              y: 0,
+              w: 13.33,
+              h: 7.5,
+              data: slide.generatedImageUrl,
+            });
+          } catch (err) {
+            console.warn('Failed to add full-slide image:', err);
+            // Fallback: add text content if image fails
+            const bullets = (slide.bullets || []).map((bullet) => `• ${bullet}`);
+            contentSlide.addText(bullets.join('\n'), {
+              x: 0.6,
+              y: 2.0,
+              w: 12.1,
+              h: 4.5,
+              fontSize: 18,
+              color: themeColors.text,
+              breakLine: true,
+              margin: 0.08,
+              fontFace: 'Arial',
+            });
+          }
+        } 
+        // Standard image handling for non-full-slide images
+        else if (slide.imageQuery || slide.imageDescription || slide.generatedImageUrl) {
+          const imageBoxX = isImageFocus ? 0.6 : 8.5;
+          const imageBoxY = 2.0;
+          const imageBoxW = isImageFocus ? 12.1 : 4.2;
+          const imageBoxH = isImageFocus ? 3.5 : 3.0;
+
+          if (slide.generatedImageUrl) {
+            // Add the actual generated image
+            try {
+              contentSlide.addImage({
+                x: imageBoxX,
+                y: imageBoxY,
+                w: imageBoxW,
+                h: imageBoxH,
+                data: slide.generatedImageUrl,
+              });
+            } catch (err) {
+              console.warn('Failed to add image to slide:', err);
+              // Fallback to placeholder on error
+              contentSlide.addShape(pptx.ShapeType.roundRect, {
+                x: imageBoxX,
+                y: imageBoxY,
+                w: imageBoxW,
+                h: imageBoxH,
+                fill: { color: themeColors.background },
+                line: { color: slideAccentColor, width: 2, dashType: 'dash' },
+                rectRadius: 0.1,
+              });
+              contentSlide.addText('🖼️', {
+                x: imageBoxX + (imageBoxW / 2) - 0.3,
+                y: imageBoxY + 0.3,
+                w: 0.6,
+                h: 0.6,
+                fontSize: 30,
+                align: 'center',
+                color: slideAccentColor,
+              });
+              contentSlide.addText(`Image: ${slide.imageQuery || slide.imageDescription}`, {
+                x: imageBoxX + 0.2,
+                y: imageBoxY + 1.0,
+                w: imageBoxW - 0.4,
+                h: 1.5,
+                fontSize: 11,
+                italic: true,
+                color: themeColors.accent,
+                align: 'center',
+                valign: 'middle',
+                fontFace: 'Arial',
+              });
+            }
+          } else {
+            // No generated image — show placeholder
+            contentSlide.addShape(pptx.ShapeType.roundRect, {
+              x: imageBoxX,
+              y: imageBoxY,
+              w: imageBoxW,
+              h: imageBoxH,
+              fill: { color: themeColors.background },
+              line: { color: slideAccentColor, width: 2, dashType: 'dash' },
+              rectRadius: 0.1,
+            });
+
+            contentSlide.addText('🖼️', {
+              x: imageBoxX + (imageBoxW / 2) - 0.3,
+              y: imageBoxY + 0.3,
+              w: 0.6,
+              h: 0.6,
+              fontSize: 30,
+              align: 'center',
+              color: slideAccentColor,
+            });
+
+            contentSlide.addText(`Image: ${slide.imageQuery || slide.imageDescription}`, {
+              x: imageBoxX + 0.2,
+              y: imageBoxY + 1.0,
+              w: imageBoxW - 0.4,
+              h: 1.5,
+              fontSize: 11,
+              italic: true,
+              color: themeColors.accent,
+              align: 'center',
+              valign: 'middle',
+              fontFace: 'Arial',
+            });
+          }
+
+          // If image-focus layout, adjust bullet text position
+          if (isImageFocus) {
+            const bullets = (slide.bullets || []).map((bullet) => `• ${bullet}`);
+            contentSlide.addText(bullets.join('\n'), {
+              x: 0.6,
+              y: 5.7,
+              w: 12.1,
+              h: 1.5,
+              fontSize: 16,
+              color: themeColors.text,
+              breakLine: true,
+              margin: 0.08,
+              fontFace: 'Arial',
+            });
+          } else {
+            // Content layout with image on the right
+            const bullets = (slide.bullets || []).map((bullet) => `• ${bullet}`);
+            contentSlide.addText(bullets.join('\n'), {
+              x: 0.6,
+              y: 2.0,
+              w: 7.5,
+              h: 4.5,
+              fontSize: 16,
+              color: themeColors.text,
+              breakLine: true,
+              margin: 0.08,
+              fontFace: 'Arial',
+            });
+          }
+        } else {
+          // No image - full width bullets
+          const bullets = (slide.bullets || []).map((bullet) => `• ${bullet}`);
+          contentSlide.addText(bullets.join('\n'), {
+            x: 0.6,
+            y: 2.0,
+            w: 12.1,
+            h: 4.5,
+            fontSize: 18,
+            color: themeColors.text,
+            breakLine: true,
+            margin: 0.08,
+            fontFace: 'Arial',
+          });
+        }
+
+        // Activity badge
+        if (isActivity) {
+          contentSlide.addShape(pptx.ShapeType.roundRect, {
+            x: 10.5,
+            y: 0.4,
+            w: 2.3,
+            h: 0.5,
+            fill: { color: slideAccentColor },
+            line: { type: 'none' },
+            rectRadius: 0.08,
+          });
+          contentSlide.addText('⚡ ACTIVITY', {
+            x: 10.5,
+            y: 0.4,
+            w: 2.3,
+            h: 0.5,
+            fontSize: 11,
+            bold: true,
+            color: 'FFFFFF',
+            align: 'center',
+            valign: 'middle',
+            fontFace: 'Arial',
+          });
+        }
+
+        // Summary badge
+        if (isSummary) {
+          contentSlide.addShape(pptx.ShapeType.roundRect, {
+            x: 10.5,
+            y: 0.4,
+            w: 2.3,
+            h: 0.5,
+            fill: { color: themeColors.primary },
+            line: { type: 'none' },
+            rectRadius: 0.08,
+          });
+          contentSlide.addText('📋 SUMMARY', {
+            x: 10.5,
+            y: 0.4,
+            w: 2.3,
+            h: 0.5,
+            fontSize: 11,
+            bold: true,
+            color: 'FFFFFF',
+            align: 'center',
+            valign: 'middle',
+            fontFace: 'Arial',
+          });
+        }
+
+        // Speaker notes
         if (slide.speakerNotes) {
           contentSlide.addText(`Speaker notes: ${slide.speakerNotes}`, {
-            x: 0.95,
-            y: 5.75,
-            w: 11.2,
-            h: 0.8,
-            fontSize: 11,
-            color: '4B5563',
+            x: 0.6,
+            y: 6.5,
+            w: 11.5,
+            h: 0.6,
+            fontSize: 10,
+            italic: true,
+            color: themeColors.accent,
+            fontFace: 'Arial',
           });
         }
       });
@@ -1591,6 +2347,14 @@ export default function Home() {
               <h2 className="text-xl font-bold text-white">
                 Welcome to IlawCraft
               </h2>
+            </div>
+
+            {/* Current School Year Badge */}
+            <div className="flex items-center justify-center">
+              <span className="inline-flex items-center gap-2 bg-[#1B365D]/80 border border-[#F59E0B]/30 px-4 py-1.5 rounded-full text-amber-400 text-xs font-bold tracking-wide">
+                <ShieldCheck className="w-3.5 h-3.5 text-[#F59E0B]" />
+                {getCurrentSchoolYear()}
+              </span>
             </div>
 
             <div className="space-y-3 text-xs sm:text-sm text-slate-300 leading-relaxed max-h-[60vh] overflow-y-auto pr-1">
@@ -1681,23 +2445,46 @@ export default function Home() {
         </div>
       )}
 
-      {/* BOW UPLOAD SUPPORT GATE MODAL */}
-      {showBowSupportGate && (
+      {/* RECEIPT UPLOAD MODAL */}
+      {showReceiptModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 sm:p-8 max-w-md w-full shadow-2xl space-y-5 text-slate-200 relative animate-in fade-in zoom-in duration-200">
+          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 sm:p-8 max-w-lg w-full shadow-2xl space-y-5 text-slate-200 relative animate-in fade-in zoom-in duration-200">
+            {/* Close button */}
+            <button
+              type="button"
+              onClick={handleCloseReceiptModal}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white transition z-10"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
             <div className="flex items-center gap-3 border-b border-slate-700 pb-3">
-              <IlawLogo className="w-10 h-10 shrink-0" />
-              <h2 className="text-xl font-bold text-white">Support IlawCraft ☕</h2>
+              <Lock className="w-8 h-8 text-amber-400" />
+              <h2 className="text-xl font-bold text-white">Unlock BOW Extraction</h2>
             </div>
 
-            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              Before uploading your BOW PDF, please consider supporting IlawCraft&apos;s ongoing development and server costs. Every contribution helps keep this tool free for DepEd teachers! 💛
-            </p>
+            {/* Instructions */}
+            <div className="bg-amber-950/20 border border-amber-800/30 rounded-xl p-4 space-y-2 text-xs sm:text-sm">
+              <p className="font-bold text-amber-400 flex items-center gap-2">
+                <Info className="w-4 h-4" /> Instructions
+              </p>
+              <ol className="list-decimal list-inside text-slate-300 space-y-1.5 leading-relaxed">
+                <li>Send <strong className="text-amber-400">₱199</strong> to GCash number <strong className="text-amber-400">09912043738</strong> or scan the QR code below.</li>
+                <li>Take a screenshot of your payment confirmation/receipt.</li>
+                <li>Upload the screenshot below and click <strong className="text-amber-400">Verify Receipt</strong>.</li>
+                <li>Once verified, you will receive <strong className="text-amber-400">10 tokens</strong> to use for BOW extraction.</li>
+                <li className="text-slate-500 text-[11px]">Note: Tokens are only consumed on successful extraction. Failed extractions do not cost tokens.</li>
+              </ol>
+            </div>
 
+            {/* GCash Details */}
             <div className="bg-slate-900/80 border border-slate-700 rounded-xl p-4 space-y-3">
-              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">GCash Support</div>
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">GCash Payment Details</div>
               <div className="flex items-center justify-between bg-slate-800 border border-slate-700 rounded-lg p-3">
-                <span className="font-mono text-lg font-bold text-[#F59E0B] tracking-wider">09912043738</span>
+                <div>
+                  <span className="font-mono text-lg font-bold text-[#F59E0B] tracking-wider">09912043738</span>
+                  <span className="ml-3 text-xs text-slate-400">Amount: <strong className="text-amber-400">₱199</strong></span>
+                </div>
                 <button
                   type="button"
                   onClick={handleCopyGCash}
@@ -1709,45 +2496,136 @@ export default function Home() {
               </div>
             </div>
 
+            {/* QR Code */}
             <div className="flex flex-col items-center gap-2">
               <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Or scan to pay</div>
               <img
                 src="/qr code gcash.jpg"
                 alt="GCash QR Code"
-                className="w-36 h-36 object-contain bg-white rounded-lg p-1 border border-slate-700"
+                className="w-32 h-32 object-contain bg-white rounded-lg p-1 border border-slate-700"
               />
             </div>
 
-            <div className="pt-2 border-t border-slate-700 space-y-3">
+            {/* Receipt Upload Area */}
+            <div className="bg-slate-900/60 border border-slate-700 rounded-xl p-4 space-y-3">
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Upload Payment Receipt</div>
+              
+              <div className="relative">
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/jpg,image/webp"
+                  onChange={handleReceiptUpload}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                />
+                <div className="border-2 border-dashed border-slate-700 rounded-lg p-4 text-center hover:border-amber-500/50 transition">
+                  {receiptFile ? (
+                    <div className="flex items-center justify-center gap-2">
+                      <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                      <span className="text-sm font-medium text-emerald-300">{receiptFileName}</span>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-1">
+                      <ImageIcon className="w-6 h-6 text-slate-500" />
+                      <span className="text-xs text-slate-400">Click to upload receipt screenshot</span>
+                      <span className="text-[10px] text-slate-600">JPEG, PNG, or WebP</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Verify Button & Status */}
               <button
                 type="button"
-                onClick={proceedWithBowFile}
-                disabled={bowSupportCountdown > 0}
-                className={`w-full font-bold py-3 px-4 rounded-xl transition flex items-center justify-center gap-2 text-sm ${
-                  bowSupportCountdown > 0
+                onClick={handleVerifyReceipt}
+                disabled={!receiptFile || isVerifyingReceipt}
+                className={`w-full font-bold py-2.5 px-4 rounded-lg transition flex items-center justify-center gap-2 text-sm ${
+                  !receiptFile || isVerifyingReceipt
                     ? 'bg-slate-700 text-slate-400 cursor-not-allowed border border-slate-600'
-                    : 'bg-[#1B365D] hover:bg-[#254677] text-white shadow-lg shadow-[#1B365D]/40 border border-[#F59E0B]/30'
+                    : 'bg-emerald-700 hover:bg-emerald-600 text-white shadow-md border border-emerald-500/30'
                 }`}
               >
-                {bowSupportCountdown > 0 ? (
+                {isVerifyingReceipt ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
-                    Please wait {bowSupportCountdown}s...
+                    <Loader2 className="w-4 h-4 animate-spin" /> Verifying...
                   </>
                 ) : (
                   <>
-                    <UploadCloud className="w-4 h-4 text-amber-400" />
-                    Continue to Upload
+                    <Shield className="w-4 h-4" /> Verify Receipt
                   </>
                 )}
               </button>
 
+              {/* Status Messages */}
+              {receiptMessage && (
+                <div className={`rounded-lg p-3 text-xs flex items-start gap-2 ${
+                  receiptStatus === 'verified' ? 'bg-emerald-950/30 border border-emerald-800/40 text-emerald-300' :
+                  receiptStatus === 'rejected' ? 'bg-red-950/30 border border-red-800/40 text-red-300' :
+                  receiptStatus === 'error' ? 'bg-red-950/30 border border-red-800/40 text-red-300' :
+                  'bg-amber-950/30 border border-amber-800/40 text-amber-300'
+                }`}>
+                  {receiptStatus === 'verified' ? <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" /> :
+                   receiptStatus === 'rejected' ? <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" /> :
+                   receiptStatus === 'error' ? <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" /> :
+                   <Info className="w-4 h-4 shrink-0 mt-0.5" />}
+                  <div>
+                    <div className="font-bold">{receiptMessage}</div>
+                    {receiptDetails && <div className="mt-1 opacity-80">{receiptDetails}</div>}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADMIN PASSWORD MODAL */}
+      {showAdminModal && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 sm:p-8 max-w-sm w-full shadow-2xl space-y-5 text-slate-200 relative animate-in fade-in zoom-in duration-200">
+            <button
+              type="button"
+              onClick={() => { setShowAdminModal(false); setAdminPassword(''); setAdminPasswordError(''); }}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white transition"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 border-b border-slate-700 pb-3">
+              <Key className="w-8 h-8 text-amber-400" />
+              <h2 className="text-xl font-bold text-white">Admin Access</h2>
+            </div>
+
+            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+              Enter the admin password to bypass the BOW extraction lock and receive unlimited tokens.
+            </p>
+
+            <div className="space-y-3">
+              <input
+                type="password"
+                value={adminPassword}
+                onChange={(e) => { setAdminPassword(e.target.value); setAdminPasswordError(''); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleAdminPasswordSubmit(); }}
+                placeholder="Enter admin password..."
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm text-slate-100 placeholder-slate-500 focus:ring-1 focus:ring-[#F59E0B] focus:border-[#F59E0B] focus:outline-none"
+              />
+              {adminPasswordError && (
+                <p className="text-xs text-red-400 font-medium flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {adminPasswordError}
+                </p>
+              )}
               <button
                 type="button"
-                onClick={cancelBowUpload}
-                className="w-full text-xs text-slate-500 hover:text-slate-300 transition py-1"
+                onClick={handleAdminPasswordSubmit}
+                className="w-full bg-[#1B365D] hover:bg-[#254677] text-white font-bold py-2.5 px-4 rounded-lg transition text-sm border border-[#F59E0B]/30"
               >
-                Cancel upload
+                <Key className="w-4 h-4 inline mr-1" /> Unlock
+              </button>
+              <button
+                type="button"
+                onClick={() => { window.open('mailto:alotski15@gmail.com?subject=IlawCraft%20Admin%20Password%20Recovery&body=Your%20IlawCraft%20admin%20password%20is%3A%20Mabbie23', '_blank'); showToast({ message: 'Password sent to your email!', type: 'success' }); }}
+                className="w-full text-xs text-slate-500 hover:text-amber-400 transition py-1"
+              >
+                Forgot password? Send to email
               </button>
             </div>
           </div>
@@ -1854,11 +2732,7 @@ export default function Home() {
         {/* API CONFIGURATION WITH EXACT MATCHING REFERENCE DETAIL DESIGN */}
         <ApiKeyPanel
           onApiKeyChange={setCurrentApiKey}
-          onGroqApiKeyChange={setCurrentGroqApiKey}
-          onOpenRouterApiKeyChange={setCurrentOpenRouterApiKey}
           onGeminiModelsChange={setCurrentGeminiModels}
-          onGroqModelsChange={setCurrentGroqModels}
-          onOpenRouterModelsChange={setCurrentOpenRouterModels}
         />
 
         {/* MAIN FORM */}
@@ -2072,7 +2946,6 @@ export default function Home() {
                 <label className="block text-sm font-medium text-slate-300 mb-1">Select Target Week</label>
                 <select
                   name="week"
-                  value={formData.week}
                   onChange={handleChange}
                   onKeyDown={(e) => {
                     // Allow typing a number to jump to the matching "Week N" option
@@ -2102,9 +2975,21 @@ export default function Home() {
                   <FileText className="w-4 h-4 text-amber-400" />
                   Extract from Budget of Work (BOW)
                 </h3>
-                <span className="text-[10px] font-bold uppercase tracking-wider bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full border border-slate-700">
-                  Optional
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full border border-slate-700">
+                    Optional
+                  </span>
+                  <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                    tokens > 0 || isAdminUnlocked
+                      ? 'bg-emerald-950/40 text-emerald-400 border-emerald-700/50'
+                      : 'bg-slate-800 text-slate-500 border-slate-700'
+                  }`}>
+                    <Lock className="w-3 h-3" />
+                    {isInitialTokenLoadComplete ? (
+                      isAdminUnlocked ? 'Unlimited' : tokens > 0 ? `${tokens} Token${tokens !== 1 ? 's' : ''}` : 'Locked'
+                    ) : 'Locked'}
+                  </span>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
@@ -2376,7 +3261,14 @@ export default function Home() {
                 type="checkbox"
                 id="includeCotIndicators"
                 checked={includeCotIndicators}
-                onChange={(e) => setIncludeCotIndicators(e.target.checked)}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    setShowCotWarningModal(true);
+                    setCotWarningCountdown(5);
+                  } else {
+                    setIncludeCotIndicators(false);
+                  }
+                }}
                 className="w-4 h-4 rounded bg-slate-900 border-slate-700 text-[#F59E0B] focus:ring-[#F59E0B] cursor-pointer"
               />
               <label htmlFor="includeCotIndicators" className="text-sm font-medium text-slate-300 cursor-pointer flex-1 flex items-center gap-2 flex-wrap">
@@ -2387,6 +3279,106 @@ export default function Home() {
               </label>
               <Lightbulb className="w-4 h-4 text-amber-400 shrink-0" title="COT (Classroom Observation Tool) indicators are required for DepEd teacher evaluations. When enabled, the AI will automatically embed these indicators throughout the lesson plan." />
             </div>
+
+            {/* COT WARNING MODAL */}
+            {showCotWarningModal && (
+              <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+                <div className="bg-slate-800 border border-amber-500/40 rounded-2xl p-6 sm:p-8 max-w-lg w-full shadow-2xl space-y-5 text-slate-200 relative animate-in fade-in zoom-in duration-200">
+                  <div className="flex items-center gap-3 border-b border-slate-700 pb-3">
+                    <AlertCircle className="w-8 h-8 text-amber-400" />
+                    <h2 className="text-xl font-bold text-white">Experimental Feature Warning</h2>
+                  </div>
+
+                  <div className="space-y-3 text-xs sm:text-sm text-slate-300 leading-relaxed max-h-[60vh] overflow-y-auto pr-1">
+                    <p>
+                      The <strong className="text-amber-400">Include COT Indicators</strong> feature is currently <strong className="text-amber-400">under observation</strong>. Use it at your own risk.
+                    </p>
+                    <p>
+                      This feature uses the latest <strong className="text-white">PMES (Performance Management and Evaluation System) tool</strong> that will show which part of the lesson plan has the indicator.
+                    </p>
+
+                    <div className="bg-slate-900/80 border border-slate-700 rounded-xl p-4 space-y-2">
+                      <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Applicable PMES COT Rating Sheet</div>
+                      {(() => {
+                        const proficiency = getProficiencyLevel(parseNameAndDesignation(formData.teacherName).designation);
+                        const matchingSheet = PMES_COT_SHEETS.find(s => s.title === proficiency);
+                        if (matchingSheet) {
+                          return (
+                            <div className="text-[11px] text-slate-300">
+                              <div className="flex items-start gap-2">
+                                <span className="text-amber-400 mt-0.5">•</span>
+                                <span><strong className="text-slate-200">{matchingSheet.title}</strong> — {matchingSheet.tool}</span>
+                              </div>
+                            </div>
+                          );
+                        }
+                        return (
+                          <div className="text-[11px] text-slate-500">
+                            No matching proficiency level found. Please ensure the teacher designation is properly formatted (e.g., "Juan Dela Cruz, Teacher I").
+                          </div>
+                        );
+                      })()}
+                    </div>
+
+                    <div className="bg-slate-900/80 border border-slate-700 rounded-xl p-4 space-y-2">
+                      <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">COT Indicators for This Proficiency Level</div>
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-slate-400">
+                        {COT_INDICATORS.filter(ind => ind !== 'experimental').map((indicator, idx) => (
+                          <div key={idx} className="flex items-start gap-1.5">
+                            <span className="text-amber-400 mt-0.5 shrink-0">•</span>
+                            <span>Indicator {indicator}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-3">
+                        <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Current School Year</div>
+                        <div className="text-sm font-bold text-amber-400 mt-1">{getCurrentSchoolYear()}</div>
+                      </div>
+                      <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-3">
+                        <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Lesson Plan Designer</div>
+                        <div className="text-sm font-bold text-white mt-1">
+                          {formData.teacherName ? getOnlyName(formData.teacherName) : 'Not specified'}
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          {formData.teacherName ? parseNameAndDesignation(formData.teacherName).designation : ''}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-3">
+                      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Teacher Proficiency Level</div>
+                      <div className="text-sm font-bold text-white mt-1">
+                        {getProficiencyLevel(parseNameAndDesignation(formData.teacherName).designation)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-700 space-y-3">
+                    <button
+                      type="button"
+                      disabled={cotWarningCountdown > 0}
+                      onClick={() => {
+                        setShowCotWarningModal(false);
+                        setIncludeCotIndicators(true);
+                      }}
+                      className="w-full bg-[#1B365D] hover:bg-[#254677] border border-[#F59E0B]/30 text-white font-bold py-2.5 px-4 rounded-xl transition shadow-lg shadow-[#1B365D]/40 text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                      {cotWarningCountdown > 0 ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Please wait {cotWarningCountdown}s...
+                        </>
+                      ) : (
+                        'Continue'
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="flex gap-4 mt-6">
               <button
@@ -2473,7 +3465,7 @@ export default function Home() {
 
                   {/* === INTENTIONS SECTION === */}
                   <div className="bg-[#1B365D] text-white p-3 rounded-t-md font-bold text-sm">
-                    Intentions. <span className="font-normal text-xs text-slate-200">Meaningful learning experiences are anchored in how we frame them. Start by deciding what you want learners to master by the end of the lesson – keep it clear and simple. Remember: Understanding your learners&apos; evolving context and designing around it ensure that your lessons connect with and are relevant to them.</span>
+                    Intentions. <span className="font-normal text-xs text-slate-200">Meaningful learning experiences are anchored in how we frame them. Start by deciding what you want learners to master by the end of the lesson – keep it clear and simple. Remember: Understanding your learners' evolving context and designing around it ensure that your lessons connect with and are relevant to them.</span>
                   </div>
 
                   {/* CURRICULUM STANDARDS */}
@@ -2671,28 +3663,105 @@ export default function Home() {
           {lessonPlan && !lessonPlan.rawText && (
             <>
               <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:p-6 shadow-sm">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="mb-4">
                   <div>
                     <h3 className="text-base font-bold text-[#1B365D]">Create a classroom-ready slide deck</h3>
                     <p className="text-sm text-slate-600">Turn the generated lesson plan into a concise slide outline you can present in class.</p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleGenerateSlides}
-                    disabled={generatingSlides}
-                    className="flex items-center justify-center gap-2 rounded-xl border border-[#F59E0B]/40 bg-[#1B365D] px-4 py-2.5 font-semibold text-white shadow-lg shadow-[#1B365D]/25 transition disabled:opacity-50"
-                  >
-                    {generatingSlides ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin text-amber-400" /> Generating slides...
-                      </>
-                    ) : (
-                      <>
-                        <Presentation className="h-4 w-4 text-amber-400" /> Generate Slide Deck
-                      </>
-                    )}
-                  </button>
                 </div>
+
+                {/* Enhanced Slide Generation Options */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                  {/* Session Selection */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Select Session <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      id="slide-session-select"
+                      className="w-full bg-white border border-slate-300 rounded-md p-2.5 text-sm text-slate-900 focus:ring-1 focus:ring-[#F59E0B] focus:outline-none"
+                    >
+                      {sessionHeaders.map((header, idx) => (
+                        <option key={idx} value={idx}>{header}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Slide Count - Fixed at 20 */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Number of Slides
+                    </label>
+                    <div className="text-2xl font-bold text-[#F59E0B]">
+                      20 <span className="text-sm font-normal text-slate-500">(maximum per deck)</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 mt-1 italic">
+                      Note: Gemini Notebook caps at 20 slides per deck
+                    </p>
+                    <p className="text-[10px] text-amber-500 mt-1 italic">
+                      ⚠️ Daily quota: ~10 slide deck generations per day (rolling 24h window)
+                    </p>
+                    {!canGenerateSlides() && (
+                      <p className="text-[10px] text-red-500 mt-1 font-bold">
+                        ⏳ Next generation available in {getTimeUntilNextGeneration() || '24h'}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Design Style Selection — Dynamic suggestions based on grade level & subject */}
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    Design Style {snapshotData?.gradeAndSection || snapshotData?.subject ? <span className="text-[10px] text-[#F59E0B] font-normal ml-1">(Recommended for your grade & subject)</span> : null}
+                  </label>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                    {getSuggestedDesignStyles(snapshotData?.gradeAndSection || formData?.gradeAndSection, snapshotData?.subject || formData?.subject).map((style) => (
+                      <label key={style.name} className="cursor-pointer relative">
+                        <input type="radio" name="designStyle" value={style.name} className="peer sr-only" defaultChecked={style.recommended} />
+                        <div className="rounded-lg border-2 border-slate-200 peer-checked:border-[#F59E0B] peer-checked:bg-amber-50 p-3 text-center transition hover:border-slate-300 relative">
+                          {style.recommended && (
+                            <span className="absolute -top-2 -right-2 bg-[#F59E0B] text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full shadow-sm">
+                              ★ RECOMMENDED
+                            </span>
+                          )}
+                          <div className="text-xs font-semibold text-slate-900">{style.name}</div>
+                          <div className="text-[10px] text-slate-500 mt-1">{style.description}</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Additional Prompt Textbox */}
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Additional Instructions <span className="text-slate-500">(Optional)</span>
+                  </label>
+                  <textarea
+                    id="slide-additional-prompt"
+                    rows={3}
+                    placeholder="Example: Design a presentation for the MONDAY lesson only, using a cohesive pink, lilac, and yellow aesthetic. The deck must be visually appealing, incorporating accurate topic-related images and 3D illustrations throughout..."
+                    className="w-full bg-white border border-slate-300 rounded-md p-2.5 text-sm text-slate-900 placeholder-slate-400 focus:ring-1 focus:ring-[#F59E0B] focus:border-[#F59E0B] focus:outline-none"
+                  />
+                </div>
+
+                {/* Generate Button */}
+                <button
+                  type="button"
+                  onClick={handleGenerateSlides}
+                  disabled={generatingSlides}
+                  className="flex items-center justify-center gap-2 rounded-xl border border-[#F59E0B]/40 bg-[#1B365D] px-6 py-3 font-semibold text-white shadow-lg shadow-[#1B365D]/25 transition disabled:opacity-50"
+                >
+                  {generatingSlides ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin text-amber-400" /> Generating slides...
+                    </>
+                  ) : (
+                    <>
+                      <Presentation className="h-4 w-4 text-amber-400" /> Generate Slide Deck
+                    </>
+                  )}
+                </button>
 
                 {slideDeckError ? (
                   <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
@@ -2703,19 +3772,62 @@ export default function Home() {
                 {slideDeck?.slides?.length ? (
                   <div className="mt-4 space-y-3">
                     <div className="text-sm font-semibold text-slate-700">Slide deck preview</div>
+                    {slideDeck.themeColors && (
+                      <div className="flex items-center gap-2 text-xs text-slate-500">
+                        <span>Theme colors:</span>
+                        <div className="flex gap-1">
+                          <div className="w-4 h-4 rounded border border-slate-300" style={{ backgroundColor: `#${slideDeck.themeColors.primary}` }} title="Primary" />
+                          <div className="w-4 h-4 rounded border border-slate-300" style={{ backgroundColor: `#${slideDeck.themeColors.secondary}` }} title="Secondary" />
+                          <div className="w-4 h-4 rounded border border-slate-300" style={{ backgroundColor: `#${slideDeck.themeColors.accent}` }} title="Accent" />
+                          <div className="w-4 h-4 rounded border border-slate-300" style={{ backgroundColor: `#${slideDeck.themeColors.background}` }} title="Background" />
+                        </div>
+                      </div>
+                    )}
                     <div className="grid gap-3 md:grid-cols-2">
                       {slideDeck.slides.slice(0, 4).map((slide, index) => (
                         <div key={`${slide.title}-${index}`} className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-                          <div className="text-sm font-semibold text-[#1B365D]">{slide.title}</div>
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm font-semibold text-[#1B365D]">{slide.title}</div>
+                            {slide.layout && slide.layout !== 'content' && (
+                              <span className="text-[9px] font-bold uppercase bg-[#F59E0B]/10 text-[#F59E0B] px-1.5 py-0.5 rounded-full">
+                                {slide.layout}
+                              </span>
+                            )}
+                          </div>
                           {slide.subtitle ? <div className="mt-1 text-xs text-slate-500">{slide.subtitle}</div> : null}
-                          <ul className="mt-2 space-y-1 text-xs text-slate-700">
-                            {slide.bullets.slice(0, 3).map((bullet, bulletIndex) => (
-                              <li key={`${slide.title}-${bulletIndex}`} className="flex gap-2">
-                                <span className="text-[#F59E0B]">•</span>
-                                <span>{bullet}</span>
-                              </li>
-                            ))}
-                          </ul>
+                          {slide.generatedImageUrl ? (
+                            <div className="mt-2">
+                              <img 
+                                src={slide.generatedImageUrl} 
+                                alt={slide.imageQuery || slide.imageDescription || 'Generated image'}
+                                className={`w-full rounded border border-slate-200 ${slide.isFullSlideImage ? 'aspect-video' : 'h-32 object-cover'}`}
+                                onError={(e) => {
+                                  e.target.style.display = 'none';
+                                }}
+                              />
+                              {slide.isFullSlideImage && (
+                                <div className="text-[10px] text-slate-500 mt-1 italic">Full-slide rendered image (1920x1080)</div>
+                              )}
+                            </div>
+                          ) : slide.imageQuery || slide.imageDescription ? (
+                            <div className="mt-2 flex items-start gap-1.5 text-[10px] text-slate-500 bg-slate-50 rounded p-1.5 border border-slate-100">
+                              <ImageIcon className="w-3 h-3 shrink-0 mt-0.5 text-[#F59E0B]" />
+                              <div>
+                                <span className="font-semibold">Image:</span> {slide.imageQuery}
+                                {slide.imageDescription && <div className="mt-0.5 italic">{slide.imageDescription}</div>}
+                              </div>
+                            </div>
+                          ) : null}
+                          {!slide.isFullSlideImage && (
+                            <ul className="mt-2 space-y-1 text-xs text-slate-700">
+                              {slide.bullets.slice(0, 3).map((bullet, bulletIndex) => (
+                                <li key={`${slide.title}-${bulletIndex}`} className="flex gap-2">
+                                  <span className="text-[#F59E0B]">•</span>
+                                  <span>{bullet}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
                         </div>
                       ))}
                     </div>

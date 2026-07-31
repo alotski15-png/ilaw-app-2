@@ -71,40 +71,6 @@ describe('buildLessonPlanPipeline', () => {
     const geminiCandidates = pipeline.filter((c) => c.provider === 'Gemini');
     expect(geminiCandidates).toHaveLength(3);
   });
-
-  it('includes Groq models when groqApiKey and groqModels are provided', () => {
-    const pipeline = buildLessonPlanPipeline({
-      geminiApiKey: 'test-key',
-      geminiModels: ['gemini-2.5-flash'],
-      groqApiKey: 'test-groq-key',
-      groqModels: ['llama-3.3-70b', 'llama-3.1-8b'],
-      prompt: 'test prompt',
-      timeout: 5000,
-    });
-
-    const groqCandidates = pipeline.filter((c) => c.provider === 'Groq');
-    expect(groqCandidates).toHaveLength(2);
-    groqCandidates.forEach((c) => {
-      expect(c.isPrimary).toBe(false);
-    });
-  });
-
-  it('includes OpenRouter models when openRouterApiKey and openRouterModels are provided', () => {
-    const pipeline = buildLessonPlanPipeline({
-      geminiApiKey: 'test-key',
-      geminiModels: ['gemini-2.5-flash'],
-      openRouterApiKey: 'test-openrouter-key',
-      openRouterModels: ['gpt-4o', 'claude-3.5-sonnet'],
-      prompt: 'test prompt',
-      timeout: 5000,
-    });
-
-    const openRouterCandidates = pipeline.filter((c) => c.provider === 'OpenRouter');
-    expect(openRouterCandidates).toHaveLength(2);
-    openRouterCandidates.forEach((c) => {
-      expect(c.isPrimary).toBe(false);
-    });
-  });
 });
 
 describe('runLessonPlanPipeline', () => {
@@ -149,12 +115,6 @@ describe('runLessonPlanPipeline', () => {
         isPrimary: true,
         fn: () => Promise.reject(new Error('API error')),
       },
-      {
-        provider: 'Groq',
-        model: 'llama-3.3-70b',
-        isPrimary: false,
-        fn: () => Promise.resolve(validJson),
-      },
     ];
 
     const result = await runLessonPlanPipeline(pipeline, {
@@ -162,8 +122,7 @@ describe('runLessonPlanPipeline', () => {
       maxRetries: 2,
     });
 
-    expect(result).not.toBeNull();
-    expect(result.provider).toContain('Groq');
+    expect(result).toBeNull();
   });
 
   it('retries primary models and succeeds on a later attempt', async () => {
@@ -213,12 +172,6 @@ describe('runLessonPlanPipeline', () => {
         provider: 'Gemini',
         model: 'gemini-2.5-pro',
         isPrimary: true,
-        fn: () => Promise.reject(new Error('API error')),
-      },
-      {
-        provider: 'Groq',
-        model: 'llama-3.3-70b',
-        isPrimary: false,
         fn: () => Promise.reject(new Error('API error')),
       },
     ];
@@ -325,24 +278,6 @@ describe('runLessonPlanPipeline', () => {
         isPrimary: true,
         fn: () => Promise.resolve(validJson),
       },
-      {
-        provider: 'Groq',
-        model: 'llama-3.3-70b',
-        isPrimary: false,
-        fn: () => {
-          otherCallCount += 1;
-          return Promise.resolve(validJson);
-        },
-      },
-      {
-        provider: 'Groq',
-        model: 'llama-3.1-8b',
-        isPrimary: false,
-        fn: () => {
-          otherCallCount += 1;
-          return Promise.resolve(validJson);
-        },
-      },
     ];
 
     const result = await runLessonPlanPipeline(pipeline, {
@@ -350,11 +285,6 @@ describe('runLessonPlanPipeline', () => {
     });
 
     expect(result).not.toBeNull();
-    // The settled flag prevents NEW batches from launching after a valid result
-    // is found. In a concurrent environment, the first batch of other models
-    // may have already started before the primary model set `settled`, so
-    // otherCallCount may be 0, 1, or 2. But it should never exceed 2 (the
-    // batch size), proving that no further batches were launched.
-    expect(otherCallCount).toBeLessThanOrEqual(2);
+    expect(result.provider).toContain('Gemini');
   });
 });

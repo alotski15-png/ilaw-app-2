@@ -10,11 +10,7 @@ export async function POST(req) {
 
     // Check headers first, then fall back to form data
     const geminiApiKey = req.headers.get('x-gemini-api-key') || formData.get('apiKey') || '';
-    const groqApiKey = req.headers.get('x-groq-api-key') || formData.get('groqApiKey') || '';
-    const openRouterApiKey = req.headers.get('x-openrouter-api-key') || formData.get('openRouterApiKey') || '';
     const geminiModels = JSON.parse(formData.get('geminiModels') || '[]');
-    const groqModels = JSON.parse(formData.get('groqModels') || '[]');
-    const openRouterModels = JSON.parse(formData.get('openRouterModels') || '[]');
     const term = formData.get('term') || 'Term 1';
     const week = formData.get('week') || 'Week 5';
     const subject = formData.get('subject') || '';
@@ -27,7 +23,7 @@ export async function POST(req) {
       );
     }
 
-    if (!geminiApiKey && !groqApiKey && !openRouterApiKey) {
+    if (!geminiApiKey) {
       return NextResponse.json(
         { error: 'No valid API keys were provided.' },
         { status: 400 }
@@ -98,15 +94,11 @@ JSON SCHEMA:
 }
 `;
 
-    // Build pipeline using all available providers (Gemini, DeepSeek, Cerebras, OpenAI).
-    // DeepSeek (FREE, 64K tokens) is prioritized over Cerebras and OpenAI.
+    // Build pipeline using all available Gemini models (latest-first).
+    // Only Gemini is used as the sole AI provider.
     const pipeline = buildAllProvidersBowPipeline({
       geminiApiKey,
-      groqApiKey,
-      openRouterApiKey,
       geminiModels,
-      groqModels,
-      openRouterModels,
       prompt,
       timeout: 12000,
       maxOutputTokens: 2000,
@@ -123,7 +115,7 @@ JSON SCHEMA:
       );
     };
 
-    const result = await runConcurrentPipeline(pipeline, { isValid, maxRetries: 10, skipQualityCheck: true });
+    const result = await runConcurrentPipeline(pipeline, { isValid, maxRetries: 10 });
 
     if (!result) {
       return NextResponse.json(

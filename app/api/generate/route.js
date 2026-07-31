@@ -47,7 +47,7 @@ export const runtime = 'nodejs';
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { geminiModels, groqModels, openRouterModels, ...formData } = body;
+    const { geminiModels, ...formData } = body;
     // The determined and sorted model lists (latest-first) are the default
     // models. The first entry in each list is the primary model.
     // The `selectedModel` field is no longer used — only the *Models arrays.
@@ -64,11 +64,8 @@ export async function POST(req) {
 
     // Check headers first, then fall back to JSON body fields
     const geminiApiKey = req.headers.get('x-gemini-api-key') || body.geminiApiKey || '';
-    const groqApiKey = req.headers.get('x-groq-api-key') || body.groqApiKey || '';
-    const openRouterApiKey = req.headers.get('x-openrouter-api-key') || body.openRouterApiKey || '';
 
-
-    if (!geminiApiKey && !groqApiKey && !openRouterApiKey) {
+    if (!geminiApiKey) {
       return NextResponse.json(
         { error: 'No valid API keys were provided.' },
         { status: 400 }
@@ -362,11 +359,7 @@ CRITICAL: Each indicator must appear at least once across the sessions. The anno
 
     const pipeline = buildLessonPlanPipeline({
       geminiApiKey,
-      groqApiKey,
-      openRouterApiKey,
       geminiModels,
-      groqModels,
-      openRouterModels,
       prompt,
       timeout: 25000,
       maxOutputTokens: 16384,
