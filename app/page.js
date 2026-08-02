@@ -1878,30 +1878,33 @@ export default function Home() {
     try {
       const { default: PptxGenJS } = await import('pptxgenjs');
       const pptx = new PptxGenJS();
+      // Set slide dimensions to 16:9 (13.33" x 7.5") for optimal viewing
       pptx.layout = 'LAYOUT_WIDE';
       pptx.author = 'IlawCraft';
       pptx.company = 'IlawCraft';
       pptx.subject = 'Lesson slide deck';
-      pptx.title = slideDeck.deckTitle || 'Lesson Slide Deck';
+      pptx.title = slideDeck.title = slideDeck.deckTitle || 'Lesson Slide Deck';
 
-      // Use theme colors from the AI or fall back to defaults
+      // Use theme colors from the AI or fall back to NotebookLM-inspired defaults
+      // NotebookLM style: clean white background with single accent color for emphasis
       const themeColors = slideDeck.themeColors || {
-        primary: '1B365D',
-        secondary: 'F59E0B',
-        accent: '4B5563',
-        background: 'F8FAFC',
-        text: '111827',
+        primary: '1B365D',      // Dark blue - primary accent color
+        secondary: 'F59E0B',    // Amber - secondary accent (used sparingly)
+        accent: '4B5563',       // Gray - for text and subtle elements
+        background: 'FFFFFF',   // Pure white - NotebookLM-style clean background
+        text: '111827',         // Dark gray - primary text color
       };
 
+      // Configure theme with NotebookLM-inspired color scheme
       pptx.theme = {
-        name: 'ilaw',
+        name: 'notebooklm',
         colorScheme: {
-          accent1: themeColors.primary,
-          accent2: themeColors.secondary,
-          accent3: themeColors.accent,
-          accent4: 'E2E8F0',
-          accent5: themeColors.background,
-          accent6: themeColors.text,
+          accent1: themeColors.primary,   // Primary accent (blue)
+          accent2: 'E2E8F0',              // Light gray (subtle)
+          accent3: themeColors.accent,    // Medium gray
+          accent4: 'F8FAFC',              // Very light gray
+          accent5: themeColors.background, // White
+          accent6: themeColors.text,      // Dark gray text
           hyperlink: { color: themeColors.primary },
           folHlink: { color: themeColors.primary },
         },
@@ -1909,88 +1912,69 @@ export default function Home() {
 
       // ===== TITLE SLIDE =====
       const titleSlide = pptx.addSlide();
-      titleSlide.background = { color: themeColors.background };
+      titleSlide.background = { color: themeColors.background }; // White background
 
-      // Decorative accent bar at the top
+      // Minimal left accent bar (NotebookLM-style subtle branding)
       titleSlide.addShape(pptx.ShapeType.rect, {
         x: 0,
         y: 0,
-        w: 13.33,
-        h: 0.15,
-        fill: { color: themeColors.secondary },
-        line: { type: 'none' },
-      });
-
-      // Decorative accent bar at the bottom
-      titleSlide.addShape(pptx.ShapeType.rect, {
-        x: 0,
-        y: 7.35,
-        w: 13.33,
-        h: 0.15,
-        fill: { color: themeColors.secondary },
-        line: { type: 'none' },
-      });
-
-      // Left accent rectangle
-      titleSlide.addShape(pptx.ShapeType.rect, {
-        x: 0,
-        y: 0.15,
-        w: 0.3,
-        h: 7.2,
+        w: 0.25,  // Narrower accent bar
+        h: 7.5,
         fill: { color: themeColors.primary },
         line: { type: 'none' },
       });
 
-      // Title text
+      // Title text - large, prominent, using primary color
       titleSlide.addText(slideDeck.deckTitle || 'Lesson Slide Deck', {
-        x: 1.0,
-        y: 1.5,
-        w: 11.5,
-        h: 1.0,
-        fontSize: 32,
+        x: 0.75,  // Indented from the accent bar
+        y: 1.0,
+        w: 12.5,
+        h: 1.5,
+        fontSize: 36,
         bold: true,
         color: themeColors.primary,
         fontFace: 'Arial',
       });
 
-      // Subtitle
+      // Subtitle - smaller, using accent color
       titleSlide.addText(slideDeck.subtitle || snapshotData?.subject || 'Generated with IlawCraft', {
-        x: 1.0,
-        y: 2.6,
-        w: 11.5,
+        x: 0.75,
+        y: 2.2,
+        w: 12.5,
         h: 0.6,
-        fontSize: 18,
+        fontSize: 20,
         color: themeColors.accent,
         fontFace: 'Arial',
       });
 
-      // Decorative line under subtitle
-      titleSlide.addShape(pptx.ShapeType.line, {
-        x: 1.0,
-        y: 3.3,
-        w: 3.0,
-        h: 0,
-        line: { color: themeColors.secondary, width: 3 },
+      // Optional: very subtle decorative element at bottom
+      titleSlide.addShape(pptx.ShapeType.rect, {
+        x: 0,
+        y: 7.35,
+        w: 13.33,
+        h: 0.15,
+        fill: { color: themeColors.accent },
+        line: { type: 'none' },
       });
 
-      // Footer text
+      // Footer text - small and subtle
       titleSlide.addText('Prepared for classroom delivery', {
-        x: 1.0,
-        y: 5.5,
-        w: 11.5,
-        h: 0.5,
-        fontSize: 14,
-        color: themeColors.text,
+        x: 0.75,
+        y: 6.0,
+        w: 12.5,
+        h: 0.4,
+        fontSize: 12,
+        color: themeColors.accent,
         fontFace: 'Arial',
       });
 
-      // IlawCraft branding
+      // IlawCraft branding - minimal and professional
       titleSlide.addText('IlawCraft', {
-        x: 10.5,
+        x: 12.0,
         y: 6.8,
-        w: 2.5,
+        w: 1.3,
         h: 0.4,
-        fontSize: 12,
+        fontSize: 10,
         bold: true,
         color: themeColors.secondary,
         align: 'right',
@@ -2000,101 +1984,74 @@ export default function Home() {
       // ===== CONTENT SLIDES =====
       slideDeck.slides.forEach((slide, slideIdx) => {
         const contentSlide = pptx.addSlide();
-        const slideAccentColor = slide.accentColor || themeColors.secondary;
+        const slideAccentColor = slide.accentColor || themeColors.primary;
         const isTitleSlide = slide.layout === 'title';
         const isImageFocus = slide.layout === 'image-focus';
         const isActivity = slide.layout === 'activity';
         const isSummary = slide.layout === 'summary';
 
-        // Background color based on layout
-        if (isTitleSlide) {
-          contentSlide.background = { color: themeColors.primary };
+        // Clean white background for most slides (NotebookLM style)
+        // Exceptions: title slides (already handled) and summary slides
+        if (!isTitleSlide && !isSummary) {
+          contentSlide.background = { color: themeColors.background }; // Pure white
         } else if (isSummary) {
-          contentSlide.background = { color: themeColors.background };
-        } else {
-          contentSlide.background = { color: 'FFFFFF' };
+          // Summary slide: very light background tint
+          contentSlide.background = { color: 'F8FAFC' }; // Almost white
         }
 
-        // Top accent bar
+        // Minimal left accent bar - subtle but present
         contentSlide.addShape(pptx.ShapeType.rect, {
           x: 0,
           y: 0,
-          w: 13.33,
-          h: 0.12,
+          w: 0.2,  // Even narrower for content slides
+          h: 7.5,
           fill: { color: slideAccentColor },
           line: { type: 'none' },
         });
 
-        // Left accent bar
-        contentSlide.addShape(pptx.ShapeType.rect, {
-          x: 0,
-          y: 0.12,
-          w: 0.15,
-          h: 7.38,
-          fill: { color: isTitleSlide ? themeColors.secondary : themeColors.primary },
-          line: { type: 'none' },
-        });
-
-        // Slide number badge (bottom right)
-        contentSlide.addShape(pptx.ShapeType.ellipse, {
-          x: 12.3,
-          y: 6.8,
-          w: 0.6,
-          h: 0.6,
-          fill: { color: slideAccentColor },
-          line: { type: 'none' },
-        });
+        // Slide number indicator - minimal and subtle (bottom left instead of right)
         contentSlide.addText(String(slideIdx + 1), {
-          x: 12.3,
-          y: 6.8,
-          w: 0.6,
-          h: 0.6,
-          fontSize: 14,
-          bold: true,
-          color: 'FFFFFF',
+          x: 0.5,
+          y: 7.1,
+          w: 0.5,
+          h: 0.4,
+          fontSize: 10,
+          color: themeColors.accent,
           align: 'center',
           valign: 'middle',
           fontFace: 'Arial',
         });
 
-        // Title text
-        const titleColor = isTitleSlide ? 'FFFFFF' : themeColors.primary;
+        // Title - prominent but clean
+        const titleColor = isTitleSlide ? themeColors.primary : themeColors.primary;
         contentSlide.addText(slide.title, {
-          x: 0.6,
-          y: 0.4,
-          w: 11.5,
-          h: 0.7,
-          fontSize: isTitleSlide ? 30 : 24,
+          x: 0.5,
+          y: 0.3,
+          w: 12.8,
+          h: 0.8,
+          fontSize: isTitleSlide ? 32 : 28,
           bold: true,
           color: titleColor,
           fontFace: 'Arial',
         });
 
-        // Subtitle
-        if (slide.subtitle) {
+        // Subtitle - if present, smaller and muted
+        if (slide.subtitle && !isTitleSlide) {
           contentSlide.addText(slide.subtitle, {
-            x: 0.6,
-            y: 1.15,
-            w: 11.5,
-            h: 0.45,
-            fontSize: 14,
-            color: isTitleSlide ? 'E2E8F0' : themeColors.accent,
+            x: 0.5,
+            y: 1.1,
+            w: 12.8,
+            h: 0.4,
+            fontSize: 16,
+            color: themeColors.accent,
             fontFace: 'Arial',
           });
         }
 
-        // Decorative line under title
-        contentSlide.addShape(pptx.ShapeType.line, {
-          x: 0.6,
-          y: 1.7,
-          w: 2.5,
-          h: 0,
-          line: { color: slideAccentColor, width: 2 },
-        });
-
         // Handle full-slide images (Gemini 3 Pro Image / 3.1 Flash Image renders)
+        // NotebookLM emphasizes strong visual elements
         if (slide.isFullSlideImage && slide.generatedImageUrl) {
-          // Full-slide rendered image occupies the entire slide
+          // Full-slide rendered image - takes precedence when available
           try {
             contentSlide.addImage({
               x: 0,
@@ -2105,65 +2062,103 @@ export default function Home() {
             });
           } catch (err) {
             console.warn('Failed to add full-slide image:', err);
-            // Fallback: add text content if image fails
+            // Fallback: minimal text overlay on colored background
+            contentSlide.background = { color: slideAccentColor + '15' }; // Very tinted background
             const bullets = (slide.bullets || []).map((bullet) => `• ${bullet}`);
             contentSlide.addText(bullets.join('\n'), {
-              x: 0.6,
-              y: 2.0,
-              w: 12.1,
-              h: 4.5,
+              x: 0.5,
+              y: 1.5,
+              w: 12.8,
+              h: 5.5,
               fontSize: 18,
               color: themeColors.text,
               breakLine: true,
-              margin: 0.08,
+              margin: 0.05,
               fontFace: 'Arial',
             });
           }
-        } 
+        }
         // Standard image handling for non-full-slide images
         else if (slide.imageQuery || slide.imageDescription || slide.generatedImageUrl) {
-          const imageBoxX = isImageFocus ? 0.6 : 8.5;
-          const imageBoxY = 2.0;
-          const imageBoxW = isImageFocus ? 12.1 : 4.2;
-          const imageBoxH = isImageFocus ? 3.5 : 3.0;
+          // NotebookLM layout: image on left, text on right (or full-width if image-focus)
+          const hasImage = slide.generatedImageUrl !== undefined;
 
-          if (slide.generatedImageUrl) {
-            // Add the actual generated image
-            try {
-              contentSlide.addImage({
-                x: imageBoxX,
-                y: imageBoxY,
-                w: imageBoxW,
-                h: imageBoxH,
-                data: slide.generatedImageUrl,
-              });
-            } catch (err) {
-              console.warn('Failed to add image to slide:', err);
-              // Fallback to placeholder on error
+          if (isImageFocus) {
+            // Image takes the full slide width, text below
+            const imageHeight = hasImage ? 4.0 : 3.5;  // Taller if we have actual image
+
+            if (hasImage) {
+              // Add the actual generated image
+              try {
+                contentSlide.addImage({
+                  x: 0.2,
+                  y: 1.5,
+                  w: 12.9,
+                  h: imageHeight,
+                  data: slide.generatedImageUrl,
+                });
+              } catch (err) {
+                console.warn('Failed to add image to slide:', err);
+                // Visual placeholder
+                contentSlide.addShape(pptx.ShapeType.roundRect, {
+                  x: 0.2,
+                  y: 1.5,
+                  w: 12.9,
+                  h: imageHeight,
+                  fill: { color: 'F0F0F0' },
+                  line: { color: slideAccentColor, width: 1.5, dashType: 'dash' },
+                  rectRadius: 0.05,
+                });
+                contentSlide.addText('🖼️', {
+                  x: 0.2 + (12.9 / 2) - 0.25,
+                  y: 1.5 + 0.5,
+                  w: 0.5,
+                  h: 0.5,
+                  fontSize: 24,
+                  align: 'center',
+                  color: slideAccentColor,
+                });
+                contentSlide.addText(`Image: ${slide.imageQuery || slide.imageDescription}`, {
+                  x: 0.2,
+                  y: 1.5 + imageHeight + 0.2,
+                  w: 12.9,
+                  h: 0.6,
+                  fontSize: 10,
+                  italic: true,
+                  color: themeColors.accent,
+                  align: 'center',
+                  valign: 'middle',
+                  fontFace: 'Arial',
+                });
+              }
+            } else {
+              // No generated image — show enhanced placeholder
               contentSlide.addShape(pptx.ShapeType.roundRect, {
-                x: imageBoxX,
-                y: imageBoxY,
-                w: imageBoxW,
-                h: imageBoxH,
-                fill: { color: themeColors.background },
-                line: { color: slideAccentColor, width: 2, dashType: 'dash' },
-                rectRadius: 0.1,
+                x: 0.2,
+                y: 1.5,
+                w: 12.9,
+                h: imageHeight,
+                fill: { color: 'F0F0F0' },
+                line: { color: slideAccentColor, width: 1.5, dashType: 'dash' },
+                rectRadius: 0.05,
               });
+
               contentSlide.addText('🖼️', {
-                x: imageBoxX + (imageBoxW / 2) - 0.3,
-                y: imageBoxY + 0.3,
-                w: 0.6,
-                h: 0.6,
-                fontSize: 30,
+                x: 0.2 + (12.9 / 2) - 0.25,
+                y: 1.5 + 0.5,
+                w: 0.5,
+                h: 0.5,
+                fontSize: 24,
                 align: 'center',
                 color: slideAccentColor,
               });
+
               contentSlide.addText(`Image: ${slide.imageQuery || slide.imageDescription}`, {
-                x: imageBoxX + 0.2,
-                y: imageBoxY + 1.0,
-                w: imageBoxW - 0.4,
-                h: 1.5,
-                fontSize: 11,
+                x: 0.2,
+                y: 1.5 + imageHeight + 0.2,
+                w: 12.9,
+                h: 0.6,
+                fontSize: 10,
                 italic: true,
                 color: themeColors.accent,
                 align: 'center',
@@ -2171,104 +2166,152 @@ export default function Home() {
                 fontFace: 'Arial',
               });
             }
-          } else {
-            // No generated image — show placeholder
-            contentSlide.addShape(pptx.ShapeType.roundRect, {
-              x: imageBoxX,
-              y: imageBoxY,
-              w: imageBoxW,
-              h: imageBoxH,
-              fill: { color: themeColors.background },
-              line: { color: slideAccentColor, width: 2, dashType: 'dash' },
-              rectRadius: 0.1,
-            });
 
-            contentSlide.addText('🖼️', {
-              x: imageBoxX + (imageBoxW / 2) - 0.3,
-              y: imageBoxY + 0.3,
-              w: 0.6,
-              h: 0.6,
-              fontSize: 30,
-              align: 'center',
-              color: slideAccentColor,
-            });
-
-            contentSlide.addText(`Image: ${slide.imageQuery || slide.imageDescription}`, {
-              x: imageBoxX + 0.2,
-              y: imageBoxY + 1.0,
-              w: imageBoxW - 0.4,
-              h: 1.5,
-              fontSize: 11,
-              italic: true,
-              color: themeColors.accent,
-              align: 'center',
-              valign: 'middle',
-              fontFace: 'Arial',
-            });
-          }
-
-          // If image-focus layout, adjust bullet text position
-          if (isImageFocus) {
+            // Text content below the image
             const bullets = (slide.bullets || []).map((bullet) => `• ${bullet}`);
             contentSlide.addText(bullets.join('\n'), {
-              x: 0.6,
-              y: 5.7,
-              w: 12.1,
-              h: 1.5,
+              x: 0.5,
+              y: 1.5 + imageHeight + 0.8,
+              w: 12.8,
+              h: 2.0,  // Reduced height for more concise bullets
               fontSize: 16,
               color: themeColors.text,
               breakLine: true,
-              margin: 0.08,
+              margin: 0.05,
               fontFace: 'Arial',
             });
           } else {
-            // Content layout with image on the right
+            // Standard layout: image on left, text on right
+            const imageWidth = hasImage ? 4.5 : 4.0;  // Slightly wider if we have actual image
+            const imageHeight = 3.0;
+
+            if (hasImage) {
+              // Add the actual generated image
+              try {
+                contentSlide.addImage({
+                  x: 0.2,
+                  y: 1.5,
+                  w: imageWidth,
+                  h: imageHeight,
+                  data: slide.generatedImageUrl,
+                });
+              } catch (err) {
+                console.warn('Failed to add image to slide:', err);
+                // Visual placeholder
+                contentSlide.addShape(pptx.ShapeType.roundRect, {
+                  x: 0.2,
+                  y: 1.5,
+                  w: imageWidth,
+                  h: imageHeight,
+                  fill: { color: 'F0F0F0' },
+                  line: { color: slideAccentColor, width: 1.5, dashType: 'dash' },
+                  rectRadius: 0.05,
+                });
+                contentSlide.addText('🖼️', {
+                  x: 0.2 + (imageWidth / 2) - 0.25,
+                  y: 1.5 + 0.5,
+                  w: 0.5,
+                  h: 0.5,
+                  fontSize: 20,
+                  align: 'center',
+                  color: slideAccentColor,
+                });
+                contentSlide.addText(`Image: ${slide.imageQuery || slide.imageDescription}`, {
+                  x: 0.2,
+                  y: 1.5 + imageHeight + 0.2,
+                  w: imageWidth - 0.4,
+                  h: 0.6,
+                  fontSize: 10,
+                  italic: true,
+                  color: themeColors.accent,
+                  align: 'center',
+                  valign: 'middle',
+                  fontFace: 'Arial',
+                });
+              }
+            } else {
+              // No generated image — show enhanced placeholder
+              contentSlide.addShape(pptx.ShapeType.roundRect, {
+                x: 0.2,
+                y: 1.5,
+                w: imageWidth,
+                h: imageHeight,
+                fill: { color: 'F0F0F0' },
+                line: { color: slideAccentColor, width: 1.5, dashType: 'dash' },
+                rectRadius: 0.05,
+              });
+
+              contentSlide.addText('🖼️', {
+                x: 0.2 + (imageWidth / 2) - 0.25,
+                y: 1.5 + 0.5,
+                w: 0.5,
+                h: 0.5,
+                fontSize: 20,
+                align: 'center',
+                color: slideAccentColor,
+              });
+
+              contentSlide.addText(`Image: ${slide.imageQuery || slide.imageDescription}`, {
+                x: 0.2,
+                y: 1.5 + imageHeight + 0.2,
+                w: imageWidth - 0.4,
+                h: 0.6,
+                fontSize: 10,
+                italic: true,
+                color: themeColors.accent,
+                align: 'center',
+                valign: 'middle',
+                fontFace: 'Arial',
+              });
+            }
+
+            // Text content on the right
             const bullets = (slide.bullets || []).map((bullet) => `• ${bullet}`);
             contentSlide.addText(bullets.join('\n'), {
-              x: 0.6,
-              y: 2.0,
-              w: 7.5,
-              h: 4.5,
+              x: 0.2 + imageWidth + 0.3,  // Space after image
+              y: 1.5,
+              w: 12.8 - imageWidth - 0.5,  // Remaining width
+              h: 4.0,
               fontSize: 16,
               color: themeColors.text,
               breakLine: true,
-              margin: 0.08,
+              margin: 0.05,
               fontFace: 'Arial',
             });
           }
         } else {
-          // No image - full width bullets
+          // No image - clean text layout with ample whitespace
           const bullets = (slide.bullets || []).map((bullet) => `• ${bullet}`);
           contentSlide.addText(bullets.join('\n'), {
-            x: 0.6,
-            y: 2.0,
-            w: 12.1,
-            h: 4.5,
+            x: 0.5,
+            y: 1.5,
+            w: 12.8,
+            h: 5.0,  // Ample vertical space
             fontSize: 18,
             color: themeColors.text,
             breakLine: true,
-            margin: 0.08,
+            margin: 0.05,
             fontFace: 'Arial',
           });
         }
 
-        // Activity badge
+        // Activity indicator - subtle but visible
         if (isActivity) {
           contentSlide.addShape(pptx.ShapeType.roundRect, {
-            x: 10.5,
-            y: 0.4,
-            w: 2.3,
-            h: 0.5,
+            x: 12.0,
+            y: 0.3,
+            w: 1.3,
+            h: 0.4,
             fill: { color: slideAccentColor },
             line: { type: 'none' },
-            rectRadius: 0.08,
+            rectRadius: 0.05,
           });
           contentSlide.addText('⚡ ACTIVITY', {
-            x: 10.5,
-            y: 0.4,
-            w: 2.3,
-            h: 0.5,
-            fontSize: 11,
+            x: 12.0,
+            y: 0.3,
+            w: 1.3,
+            h: 0.4,
+            fontSize: 10,
             bold: true,
             color: 'FFFFFF',
             align: 'center',
@@ -2277,23 +2320,23 @@ export default function Home() {
           });
         }
 
-        // Summary badge
+        // Summary indicator - subtle but visible
         if (isSummary) {
           contentSlide.addShape(pptx.ShapeType.roundRect, {
-            x: 10.5,
-            y: 0.4,
-            w: 2.3,
-            h: 0.5,
+            x: 12.0,
+            y: 0.3,
+            w: 1.3,
+            h: 0.4,
             fill: { color: themeColors.primary },
             line: { type: 'none' },
-            rectRadius: 0.08,
+            rectRadius: 0.05,
           });
           contentSlide.addText('📋 SUMMARY', {
-            x: 10.5,
-            y: 0.4,
-            w: 2.3,
-            h: 0.5,
-            fontSize: 11,
+            x: 12.0,
+            y: 0.3,
+            w: 1.3,
+            h: 0.4,
+            fontSize: 10,
             bold: true,
             color: 'FFFFFF',
             align: 'center',
@@ -2302,14 +2345,14 @@ export default function Home() {
           });
         }
 
-        // Speaker notes
+        // Speaker notes - minimal and subtle at the bottom
         if (slide.speakerNotes) {
           contentSlide.addText(`Speaker notes: ${slide.speakerNotes}`, {
-            x: 0.6,
-            y: 6.5,
-            w: 11.5,
-            h: 0.6,
-            fontSize: 10,
+            x: 0.5,
+            y: 6.8,
+            w: 12.8,
+            h: 0.5,
+            fontSize: 9,
             italic: true,
             color: themeColors.accent,
             fontFace: 'Arial',
