@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { filterAndSortVisionModels, getPrimaryModel } from '@/lib/model-sorter';
 
 export const runtime = 'nodejs';
 
@@ -7,6 +8,8 @@ export async function POST(req) {
   try {
     const formData = await req.formData();
     const apiKey = formData.get('apiKey') || '';
+    const geminiModelsJson = formData.get('geminiModels') || '[]';
+    const geminiModels = JSON.parse(geminiModelsJson);
     const receiptFile = formData.get('receiptFile');
 
     if (!apiKey) {
@@ -38,9 +41,14 @@ export async function POST(req) {
     const base64Image = fileBuffer.toString('base64');
     const mimeType = receiptFile.type;
 
-    // Initialize Gemini
+    // Initialize Gemini with dynamic model selection for vision
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+
+    // Get the primary (latest) vision-capable model
+    const sortedVisionModels = filterAndSortVisionModels(geminiModels);
+    const visionModel = getPrimaryModel(sortedVisionModels) || 'gemini-1.5-pro'; // fallback to known vision model
+
+    const model = genAI.getGenerativeModel({ model: visionModel });
 
     const imagePart = {
       inlineData: {
