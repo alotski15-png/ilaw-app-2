@@ -1,7 +1,12 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { mapIndicatorToOrdinal, COT_INDICATORS } from '@/lib/cot-indicators';
+import {
+  mapIndicatorToOrdinal,
+  COT_INDICATORS,
+  getCotIndicatorByCode,
+  resolveCotCareerStage,
+} from '@/lib/cot-indicators';
 import { showToast } from './components/Toast';
 import { 
   Sparkles, 
@@ -415,6 +420,26 @@ const getCurrentSchoolYear = () => {
   return `SY ${year - 1}-${year}`;
 };
 
+const getSlideQuotaStatus = (history, now) => {
+  const twentyFourHours = 24 * 60 * 60 * 1000;
+  const recentGenerations = history.filter((timestamp) => (now - timestamp) < twentyFourHours);
+  const oldestTimestamp = recentGenerations[0];
+  const timeRemaining = oldestTimestamp ? twentyFourHours - (now - oldestTimestamp) : 0;
+  let timeUntilNextGeneration = null;
+
+  if (timeRemaining > 0) {
+    const hours = Math.floor(timeRemaining / (60 * 60 * 1000));
+    const minutes = Math.floor((timeRemaining % (60 * 60 * 1000)) / (60 * 1000));
+    timeUntilNextGeneration = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+  }
+
+  return {
+    recentGenerations,
+    canGenerate: recentGenerations.length < 10,
+    timeUntilNextGeneration,
+  };
+};
+
 // PMES COT Rating Sheets info extracted from the 4 Annex E-2 docx files
 const PMES_COT_SHEETS = [
   {
@@ -574,7 +599,7 @@ export default function Home() {
 
   // Token System State (client-side hydration)
   useEffect(() => {
-    if (typeof window !== 'undefined') {
+    const hydrationTimer = window.setTimeout(() => {
       try {
         const saved = localStorage.getItem('bow_tokens');
         if (saved !== null) { // Check for null, not just falsy (as '0' is falsy)
@@ -585,10 +610,9 @@ export default function Home() {
       } finally {
         setIsInitialTokenLoadComplete(true);
       }
-    } else {
-      // For SSR, assume tokens is 0 and mark initial load as complete
-      setIsInitialTokenLoadComplete(true);
-    }
+    }, 0);
+
+    return () => window.clearTimeout(hydrationTimer);
   }, []);
 
   // Receipt Upload Modal State
@@ -608,13 +632,17 @@ export default function Home() {
 
   // Admin lock state (client-side hydration)
   useEffect(() => {
-    try {
-      if (localStorage.getItem('bow_admin_unlocked') === 'true') {
-        setIsAdminUnlocked(true);
+    const hydrationTimer = window.setTimeout(() => {
+      try {
+        if (localStorage.getItem('bow_admin_unlocked') === 'true') {
+          setIsAdminUnlocked(true);
+        }
+      } catch {
+        // On error, admin remains locked
       }
-    } catch {
-      // On error, admin remains locked
-    }
+    }, 0);
+
+    return () => window.clearTimeout(hydrationTimer);
   }, []);
 
   const [formData, setFormData] = useState({
@@ -638,6 +666,11 @@ export default function Home() {
     references: [],
   });
 
+  const cotCareerStage = useMemo(
+    () => resolveCotCareerStage(formData.teacherName),
+    [formData.teacherName],
+  );
+
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
   const [error, setError] = useState('');
@@ -650,7 +683,23 @@ export default function Home() {
   const [slideDeckError, setSlideDeckError] = useState('');
   const [downloadingSlides, setDownloadingSlides] = useState(false);
   const [slideGenerationHistory, setSlideGenerationHistory] = useState([]); // Track generation timestamps
-  const [slideCount] = useState(20); // Fixed at max 20 slides per deck
+  const [slideCount, setSlideCount] = useState(16);
+  const [slideQuotaNow, setSlideQuotaNow] = useState(0);
+
+  useEffect(() => {
+    const updateQuotaClock = () => setSlideQuotaNow(Date.now());
+    const initialTimer = window.setTimeout(updateQuotaClock, 0);
+    const minuteTimer = window.setInterval(updateQuotaClock, 60 * 1000);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(minuteTimer);
+    };
+  }, []);
+
+  const slideQuotaStatus = useMemo(
+    () => getSlideQuotaStatus(slideGenerationHistory, slideQuotaNow),
+    [slideGenerationHistory, slideQuotaNow],
+  );
 
   // Support timer state
   const [showSupportTimer, setShowSupportTimer] = useState(false);
@@ -846,7 +895,6 @@ export default function Home() {
         additionalPrompts: formData.additionalPrompts,
         resources: finalResources,
         references: finalReferences,
-        geminiApiKey: currentApiKey,
         includeCotIndicators: effectiveIncludeCotIndicators,
         geminiModels: currentGeminiModels,
         autoTitlePrompt,
@@ -855,7 +903,10 @@ export default function Home() {
       console.log('[DEBUG] Sending request...');
       const response = await fetch('/api/generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-gemini-api-key': currentApiKey,
+        },
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
@@ -1740,50 +1791,6 @@ export default function Home() {
     }
   };
 
-  // Check if user can generate slides based on 24h rolling quota
-  const canGenerateSlides = () => {
-    if (slideGenerationHistory.length === 0) return true;
-    
-    const now = Date.now();
-    const twentyFourHours = 24 * 60 * 60 * 1000;
-    
-    // Filter out entries older than 24 hours
-    const recentGenerations = slideGenerationHistory.filter(timestamp => {
-      return (now - timestamp) < twentyFourHours;
-    });
-    
-    // Update history to remove old entries
-    if (recentGenerations.length !== slideGenerationHistory.length) {
-      setSlideGenerationHistory(recentGenerations);
-    }
-    
-    // Allow up to 10 generations per day
-    return recentGenerations.length < 10;
-  };
-
-  const getTimeUntilNextGeneration = () => {
-    if (slideGenerationHistory.length === 0) return null;
-    
-    const now = Date.now();
-    const twentyFourHours = 24 * 60 * 60 * 1000;
-    
-    // Find the oldest generation that's still within the 24h window
-    const oldestTimestamp = slideGenerationHistory[0];
-    const timePassed = now - oldestTimestamp;
-    const timeRemaining = twentyFourHours - timePassed;
-    
-    if (timeRemaining <= 0) return null;
-    
-    // Convert to hours and minutes
-    const hours = Math.floor(timeRemaining / (60 * 60 * 1000));
-    const minutes = Math.floor((timeRemaining % (60 * 60 * 1000)) / (60 * 1000));
-    
-    if (hours > 0) {
-      return `${hours}h ${minutes}m`;
-    }
-    return `${minutes}m`;
-  };
-
   const handleGenerateSlides = async () => {
     if (!lessonPlan) {
       showToast({ message: 'Generate a lesson plan first before creating slides.', type: 'error' });
@@ -1795,11 +1802,16 @@ export default function Home() {
       return;
     }
 
-    // Check quota before generating
-    if (!canGenerateSlides()) {
-      const timeLeft = getTimeUntilNextGeneration();
+    // Check quota using an event-time snapshot, then prune expired entries.
+    const quotaCheckTime = Date.now();
+    const quotaCheck = getSlideQuotaStatus(slideGenerationHistory, quotaCheckTime);
+    setSlideQuotaNow(quotaCheckTime);
+    if (quotaCheck.recentGenerations.length !== slideGenerationHistory.length) {
+      setSlideGenerationHistory(quotaCheck.recentGenerations);
+    }
+    if (!quotaCheck.canGenerate) {
       showToast({ 
-        message: `Daily slide generation quota reached (~10 decks/day). Next generation available in ${timeLeft || '24h'}.`, 
+        message: `Daily slide generation quota reached (~10 decks/day). Next generation available in ${quotaCheck.timeUntilNextGeneration || '24h'}.`, 
         type: 'error',
         duration: 5000
       });
@@ -1814,10 +1826,6 @@ export default function Home() {
       // Get selected session index
       const sessionSelect = document.getElementById('slide-session-select');
       const sessionIndex = sessionSelect ? parseInt(sessionSelect.value, 10) : 0;
-
-      // Get slide count
-      // const slideCountSlider = document.getElementById('slide-count-slider');
-      // const slideCount = slideCountSlider ? parseInt(slideCountSlider.value, 10) : 20; // Use the state variable directly
 
       // Get design style
       const designStyleRadios = document.getElementsByName('designStyle');
@@ -1835,13 +1843,15 @@ export default function Home() {
 
       const response = await fetch('/api/generate-slides', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-gemini-api-key': currentApiKey,
+        },
         body: JSON.stringify({
           lessonPlan,
           snapshotData,
           formData,
           geminiModels: currentGeminiModels,
-          geminiApiKey: currentApiKey,
           sessionIndex,
           slideCount,
           designStyle,
@@ -1850,17 +1860,19 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Slide generation failed (${response.status}): ${errorText}`);
+        const errorPayload = await response.json().catch(() => ({}));
+        throw new Error(errorPayload.error || 'Slide generation failed (' + response.status + ').');
       }
 
       const result = await response.json();
       setSlideDeck(result.slideDeck || result);
       
       // Record successful generation timestamp for quota tracking
-      setSlideGenerationHistory(prev => [...prev, Date.now()]);
+      const generatedAt = Date.now();
+      setSlideQuotaNow(generatedAt);
+      setSlideGenerationHistory(prev => [...prev, generatedAt]);
       
-      showToast({ message: 'Slide deck outline generated successfully.', type: 'success' });
+      showToast({ message: 'Editable narrative slide deck generated successfully.', type: 'success' });
     } catch (err) {
       console.error('Error generating slides:', err);
       setSlideDeckError(err.message || 'Failed to generate slide deck.');
@@ -1876,454 +1888,21 @@ export default function Home() {
     setDownloadingSlides(true);
 
     try {
-      const { default: PptxGenJS } = await import('pptxgenjs');
-      const pptx = new PptxGenJS();
-      pptx.layout = 'LAYOUT_WIDE';
-      pptx.author = 'IlawCraft';
-      pptx.company = 'IlawCraft';
-      pptx.subject = 'Lesson slide deck';
-      pptx.title = slideDeck.deckTitle || 'Lesson Slide Deck';
-
-      // Use theme colors from the AI or fall back to defaults
-      const themeColors = slideDeck.themeColors || {
-        primary: '1B365D',
-        secondary: 'F59E0B',
-        accent: '4B5563',
-        background: 'F8FAFC',
-        text: '111827',
-      };
-
-      pptx.theme = {
-        name: 'ilaw',
-        colorScheme: {
-          accent1: themeColors.primary,
-          accent2: themeColors.secondary,
-          accent3: themeColors.accent,
-          accent4: 'E2E8F0',
-          accent5: themeColors.background,
-          accent6: themeColors.text,
-          hyperlink: { color: themeColors.primary },
-          folHlink: { color: themeColors.primary },
-        },
-      };
-
-      // ===== TITLE SLIDE =====
-      const titleSlide = pptx.addSlide();
-      titleSlide.background = { color: themeColors.background };
-
-      // Decorative accent bar at the top
-      titleSlide.addShape(pptx.ShapeType.rect, {
-        x: 0,
-        y: 0,
-        w: 13.33,
-        h: 0.15,
-        fill: { color: themeColors.secondary },
-        line: { type: 'none' },
+      const { downloadSlideDeckPptx } = await import('@/lib/pptx-generator');
+      await downloadSlideDeckPptx({
+        slideDeck,
+        snapshotData: snapshotData || formData,
       });
-
-      // Decorative accent bar at the bottom
-      titleSlide.addShape(pptx.ShapeType.rect, {
-        x: 0,
-        y: 7.35,
-        w: 13.33,
-        h: 0.15,
-        fill: { color: themeColors.secondary },
-        line: { type: 'none' },
+      showToast({
+        message: 'Editable classroom PowerPoint downloaded successfully.',
+        type: 'success',
       });
-
-      // Left accent rectangle
-      titleSlide.addShape(pptx.ShapeType.rect, {
-        x: 0,
-        y: 0.15,
-        w: 0.3,
-        h: 7.2,
-        fill: { color: themeColors.primary },
-        line: { type: 'none' },
-      });
-
-      // Title text
-      titleSlide.addText(slideDeck.deckTitle || 'Lesson Slide Deck', {
-        x: 1.0,
-        y: 1.5,
-        w: 11.5,
-        h: 1.0,
-        fontSize: 32,
-        bold: true,
-        color: themeColors.primary,
-        fontFace: 'Arial',
-      });
-
-      // Subtitle
-      titleSlide.addText(slideDeck.subtitle || snapshotData?.subject || 'Generated with IlawCraft', {
-        x: 1.0,
-        y: 2.6,
-        w: 11.5,
-        h: 0.6,
-        fontSize: 18,
-        color: themeColors.accent,
-        fontFace: 'Arial',
-      });
-
-      // Decorative line under subtitle
-      titleSlide.addShape(pptx.ShapeType.line, {
-        x: 1.0,
-        y: 3.3,
-        w: 3.0,
-        h: 0,
-        line: { color: themeColors.secondary, width: 3 },
-      });
-
-      // Footer text
-      titleSlide.addText('Prepared for classroom delivery', {
-        x: 1.0,
-        y: 5.5,
-        w: 11.5,
-        h: 0.5,
-        fontSize: 14,
-        color: themeColors.text,
-        fontFace: 'Arial',
-      });
-
-      // IlawCraft branding
-      titleSlide.addText('IlawCraft', {
-        x: 10.5,
-        y: 6.8,
-        w: 2.5,
-        h: 0.4,
-        fontSize: 12,
-        bold: true,
-        color: themeColors.secondary,
-        align: 'right',
-        fontFace: 'Arial',
-      });
-
-      // ===== CONTENT SLIDES =====
-      slideDeck.slides.forEach((slide, slideIdx) => {
-        const contentSlide = pptx.addSlide();
-        const slideAccentColor = slide.accentColor || themeColors.secondary;
-        const isTitleSlide = slide.layout === 'title';
-        const isImageFocus = slide.layout === 'image-focus';
-        const isActivity = slide.layout === 'activity';
-        const isSummary = slide.layout === 'summary';
-
-        // Background color based on layout
-        if (isTitleSlide) {
-          contentSlide.background = { color: themeColors.primary };
-        } else if (isSummary) {
-          contentSlide.background = { color: themeColors.background };
-        } else {
-          contentSlide.background = { color: 'FFFFFF' };
-        }
-
-        // Top accent bar
-        contentSlide.addShape(pptx.ShapeType.rect, {
-          x: 0,
-          y: 0,
-          w: 13.33,
-          h: 0.12,
-          fill: { color: slideAccentColor },
-          line: { type: 'none' },
-        });
-
-        // Left accent bar
-        contentSlide.addShape(pptx.ShapeType.rect, {
-          x: 0,
-          y: 0.12,
-          w: 0.15,
-          h: 7.38,
-          fill: { color: isTitleSlide ? themeColors.secondary : themeColors.primary },
-          line: { type: 'none' },
-        });
-
-        // Slide number badge (bottom right)
-        contentSlide.addShape(pptx.ShapeType.ellipse, {
-          x: 12.3,
-          y: 6.8,
-          w: 0.6,
-          h: 0.6,
-          fill: { color: slideAccentColor },
-          line: { type: 'none' },
-        });
-        contentSlide.addText(String(slideIdx + 1), {
-          x: 12.3,
-          y: 6.8,
-          w: 0.6,
-          h: 0.6,
-          fontSize: 14,
-          bold: true,
-          color: 'FFFFFF',
-          align: 'center',
-          valign: 'middle',
-          fontFace: 'Arial',
-        });
-
-        // Title text
-        const titleColor = isTitleSlide ? 'FFFFFF' : themeColors.primary;
-        contentSlide.addText(slide.title, {
-          x: 0.6,
-          y: 0.4,
-          w: 11.5,
-          h: 0.7,
-          fontSize: isTitleSlide ? 30 : 24,
-          bold: true,
-          color: titleColor,
-          fontFace: 'Arial',
-        });
-
-        // Subtitle
-        if (slide.subtitle) {
-          contentSlide.addText(slide.subtitle, {
-            x: 0.6,
-            y: 1.15,
-            w: 11.5,
-            h: 0.45,
-            fontSize: 14,
-            color: isTitleSlide ? 'E2E8F0' : themeColors.accent,
-            fontFace: 'Arial',
-          });
-        }
-
-        // Decorative line under title
-        contentSlide.addShape(pptx.ShapeType.line, {
-          x: 0.6,
-          y: 1.7,
-          w: 2.5,
-          h: 0,
-          line: { color: slideAccentColor, width: 2 },
-        });
-
-        // Handle full-slide images (Gemini 3 Pro Image / 3.1 Flash Image renders)
-        if (slide.isFullSlideImage && slide.generatedImageUrl) {
-          // Full-slide rendered image occupies the entire slide
-          try {
-            contentSlide.addImage({
-              x: 0,
-              y: 0,
-              w: 13.33,
-              h: 7.5,
-              data: slide.generatedImageUrl,
-            });
-          } catch (err) {
-            console.warn('Failed to add full-slide image:', err);
-            // Fallback: add text content if image fails
-            const bullets = (slide.bullets || []).map((bullet) => `• ${bullet}`);
-            contentSlide.addText(bullets.join('\n'), {
-              x: 0.6,
-              y: 2.0,
-              w: 12.1,
-              h: 4.5,
-              fontSize: 18,
-              color: themeColors.text,
-              breakLine: true,
-              margin: 0.08,
-              fontFace: 'Arial',
-            });
-          }
-        } 
-        // Standard image handling for non-full-slide images
-        else if (slide.imageQuery || slide.imageDescription || slide.generatedImageUrl) {
-          const imageBoxX = isImageFocus ? 0.6 : 8.5;
-          const imageBoxY = 2.0;
-          const imageBoxW = isImageFocus ? 12.1 : 4.2;
-          const imageBoxH = isImageFocus ? 3.5 : 3.0;
-
-          if (slide.generatedImageUrl) {
-            // Add the actual generated image
-            try {
-              contentSlide.addImage({
-                x: imageBoxX,
-                y: imageBoxY,
-                w: imageBoxW,
-                h: imageBoxH,
-                data: slide.generatedImageUrl,
-              });
-            } catch (err) {
-              console.warn('Failed to add image to slide:', err);
-              // Fallback to placeholder on error
-              contentSlide.addShape(pptx.ShapeType.roundRect, {
-                x: imageBoxX,
-                y: imageBoxY,
-                w: imageBoxW,
-                h: imageBoxH,
-                fill: { color: themeColors.background },
-                line: { color: slideAccentColor, width: 2, dashType: 'dash' },
-                rectRadius: 0.1,
-              });
-              contentSlide.addText('🖼️', {
-                x: imageBoxX + (imageBoxW / 2) - 0.3,
-                y: imageBoxY + 0.3,
-                w: 0.6,
-                h: 0.6,
-                fontSize: 30,
-                align: 'center',
-                color: slideAccentColor,
-              });
-              contentSlide.addText(`Image: ${slide.imageQuery || slide.imageDescription}`, {
-                x: imageBoxX + 0.2,
-                y: imageBoxY + 1.0,
-                w: imageBoxW - 0.4,
-                h: 1.5,
-                fontSize: 11,
-                italic: true,
-                color: themeColors.accent,
-                align: 'center',
-                valign: 'middle',
-                fontFace: 'Arial',
-              });
-            }
-          } else {
-            // No generated image — show placeholder
-            contentSlide.addShape(pptx.ShapeType.roundRect, {
-              x: imageBoxX,
-              y: imageBoxY,
-              w: imageBoxW,
-              h: imageBoxH,
-              fill: { color: themeColors.background },
-              line: { color: slideAccentColor, width: 2, dashType: 'dash' },
-              rectRadius: 0.1,
-            });
-
-            contentSlide.addText('🖼️', {
-              x: imageBoxX + (imageBoxW / 2) - 0.3,
-              y: imageBoxY + 0.3,
-              w: 0.6,
-              h: 0.6,
-              fontSize: 30,
-              align: 'center',
-              color: slideAccentColor,
-            });
-
-            contentSlide.addText(`Image: ${slide.imageQuery || slide.imageDescription}`, {
-              x: imageBoxX + 0.2,
-              y: imageBoxY + 1.0,
-              w: imageBoxW - 0.4,
-              h: 1.5,
-              fontSize: 11,
-              italic: true,
-              color: themeColors.accent,
-              align: 'center',
-              valign: 'middle',
-              fontFace: 'Arial',
-            });
-          }
-
-          // If image-focus layout, adjust bullet text position
-          if (isImageFocus) {
-            const bullets = (slide.bullets || []).map((bullet) => `• ${bullet}`);
-            contentSlide.addText(bullets.join('\n'), {
-              x: 0.6,
-              y: 5.7,
-              w: 12.1,
-              h: 1.5,
-              fontSize: 16,
-              color: themeColors.text,
-              breakLine: true,
-              margin: 0.08,
-              fontFace: 'Arial',
-            });
-          } else {
-            // Content layout with image on the right
-            const bullets = (slide.bullets || []).map((bullet) => `• ${bullet}`);
-            contentSlide.addText(bullets.join('\n'), {
-              x: 0.6,
-              y: 2.0,
-              w: 7.5,
-              h: 4.5,
-              fontSize: 16,
-              color: themeColors.text,
-              breakLine: true,
-              margin: 0.08,
-              fontFace: 'Arial',
-            });
-          }
-        } else {
-          // No image - full width bullets
-          const bullets = (slide.bullets || []).map((bullet) => `• ${bullet}`);
-          contentSlide.addText(bullets.join('\n'), {
-            x: 0.6,
-            y: 2.0,
-            w: 12.1,
-            h: 4.5,
-            fontSize: 18,
-            color: themeColors.text,
-            breakLine: true,
-            margin: 0.08,
-            fontFace: 'Arial',
-          });
-        }
-
-        // Activity badge
-        if (isActivity) {
-          contentSlide.addShape(pptx.ShapeType.roundRect, {
-            x: 10.5,
-            y: 0.4,
-            w: 2.3,
-            h: 0.5,
-            fill: { color: slideAccentColor },
-            line: { type: 'none' },
-            rectRadius: 0.08,
-          });
-          contentSlide.addText('⚡ ACTIVITY', {
-            x: 10.5,
-            y: 0.4,
-            w: 2.3,
-            h: 0.5,
-            fontSize: 11,
-            bold: true,
-            color: 'FFFFFF',
-            align: 'center',
-            valign: 'middle',
-            fontFace: 'Arial',
-          });
-        }
-
-        // Summary badge
-        if (isSummary) {
-          contentSlide.addShape(pptx.ShapeType.roundRect, {
-            x: 10.5,
-            y: 0.4,
-            w: 2.3,
-            h: 0.5,
-            fill: { color: themeColors.primary },
-            line: { type: 'none' },
-            rectRadius: 0.08,
-          });
-          contentSlide.addText('📋 SUMMARY', {
-            x: 10.5,
-            y: 0.4,
-            w: 2.3,
-            h: 0.5,
-            fontSize: 11,
-            bold: true,
-            color: 'FFFFFF',
-            align: 'center',
-            valign: 'middle',
-            fontFace: 'Arial',
-          });
-        }
-
-        // Speaker notes
-        if (slide.speakerNotes) {
-          contentSlide.addText(`Speaker notes: ${slide.speakerNotes}`, {
-            x: 0.6,
-            y: 6.5,
-            w: 11.5,
-            h: 0.6,
-            fontSize: 10,
-            italic: true,
-            color: themeColors.accent,
-            fontFace: 'Arial',
-          });
-        }
-      });
-
-      const subjectName = snapshotData?.subject || 'Subject';
-      const termName = snapshotData?.term || 'Term 1';
-      const weekName = snapshotData?.week || 'Week 1';
-      await pptx.writeFile({ fileName: `${subjectName}_${termName}_${weekName}_SlideDeck.pptx` });
     } catch (err) {
       console.error('Error exporting slide deck:', err);
-      showToast({ message: 'Failed to download slide deck.', type: 'error' });
+      showToast({
+        message: err.message || 'Failed to download slide deck.',
+        type: 'error',
+      });
     } finally {
       setDownloadingSlides(false);
     }
@@ -3274,10 +2853,10 @@ export default function Home() {
               <label htmlFor="includeCotIndicators" className="text-sm font-medium text-slate-300 cursor-pointer flex-1 flex items-center gap-2 flex-wrap">
                 <span>Include COT Indicators in generated lesson plan</span>
                 <span className="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
-                  Experimental
+                  Annex E-1 guided
                 </span>
               </label>
-              <Lightbulb className="w-4 h-4 text-amber-400 shrink-0" title="COT (Classroom Observation Tool) indicators are required for DepEd teacher evaluations. When enabled, the AI will automatically embed these indicators throughout the lesson plan." />
+              <Lightbulb className="w-4 h-4 text-amber-400 shrink-0" title="Builds an observable-evidence map aligned with the full COT rubric and the teacher's career-stage band." />
             </div>
 
             {/* COT WARNING MODAL */}
@@ -3286,15 +2865,15 @@ export default function Home() {
                 <div className="bg-slate-800 border border-amber-500/40 rounded-2xl p-6 sm:p-8 max-w-lg w-full shadow-2xl space-y-5 text-slate-200 relative animate-in fade-in zoom-in duration-200">
                   <div className="flex items-center gap-3 border-b border-slate-700 pb-3">
                     <AlertCircle className="w-8 h-8 text-amber-400" />
-                    <h2 className="text-xl font-bold text-white">Experimental Feature Warning</h2>
+                    <h2 className="text-xl font-bold text-white">COT Rubric Alignment</h2>
                   </div>
 
                   <div className="space-y-3 text-xs sm:text-sm text-slate-300 leading-relaxed max-h-[60vh] overflow-y-auto pr-1">
                     <p>
-                      The <strong className="text-amber-400">Include COT Indicators</strong> feature is currently <strong className="text-amber-400">under observation</strong>. Use it at your own risk.
+                      This mode uses the <strong className="text-white">Annex E-1 full COT rubric (Levels 1-9)</strong> to design observable teacher moves, learner actions, assessment evidence, and precise lesson locations—not annotation labels alone.
                     </p>
                     <p>
-                      This feature uses the latest <strong className="text-white">PMES (Performance Management and Evaluation System) tool</strong> that will show which part of the lesson plan has the indicator.
+                      It targets <strong className="text-amber-400">Level {cotCareerStage.targetRubricLevel}</strong>, the highest level in the resolved {cotCareerStage.rubricRange[0]}-{cotCareerStage.rubricRange[1]} career-stage band. The lesson is an evidence blueprint; the actual classroom observation and evaluator judgment determine the rating.
                     </p>
 
                     <div className="bg-slate-900/80 border border-slate-700 rounded-xl p-4 space-y-2">
@@ -3314,19 +2893,22 @@ export default function Home() {
                         }
                         return (
                           <div className="text-[11px] text-slate-500">
-                            No matching proficiency level found. Please ensure the teacher designation is properly formatted (e.g., "Juan Dela Cruz, Teacher I").
+                            No matching proficiency level found. Please ensure the teacher designation is properly formatted (e.g., &quot;Juan Dela Cruz, Teacher I&quot;).
                           </div>
                         );
                       })()}
                     </div>
 
                     <div className="bg-slate-900/80 border border-slate-700 rounded-xl p-4 space-y-2">
-                      <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">COT Indicators for This Proficiency Level</div>
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-slate-400">
+                      <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Priority indicators and full-rubric mapping</div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-[11px] text-slate-400">
                         {COT_INDICATORS.filter(ind => ind !== 'experimental').map((indicator, idx) => (
                           <div key={idx} className="flex items-start gap-1.5">
                             <span className="text-amber-400 mt-0.5 shrink-0">•</span>
-                            <span>Indicator {indicator}</span>
+                            <span>
+                              <strong className="text-slate-200">#{getCotIndicatorByCode(indicator)?.ordinal} · {indicator}</strong>
+                              <span className="block text-slate-500">{getCotIndicatorByCode(indicator)?.title}</span>
+                            </span>
                           </div>
                         ))}
                       </div>
@@ -3352,6 +2934,9 @@ export default function Home() {
                       <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Teacher Proficiency Level</div>
                       <div className="text-sm font-bold text-white mt-1">
                         {getProficiencyLevel(parseNameAndDesignation(formData.teacherName).designation)}
+                      </div>
+                      <div className="text-[11px] text-amber-300 mt-1">
+                        Annex E-1 target: Level {cotCareerStage.targetRubricLevel} · {cotCareerStage.label}
                       </div>
                     </div>
                   </div>
@@ -3463,9 +3048,57 @@ export default function Home() {
                     </tbody>
                   </table>
 
+                  {Array.isArray(lessonPlan.cotAlignment?.evidenceMatrix) && lessonPlan.cotAlignment.evidenceMatrix.length > 0 ? (
+                    <details className="rounded-xl border border-amber-300 bg-amber-50/70 p-4">
+                      <summary className="cursor-pointer list-none">
+                        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <div className="text-sm font-bold text-[#1B365D]">COT observable-evidence map</div>
+                            <div className="text-xs text-slate-600">Expand to review where each indicator is demonstrated before observation.</div>
+                          </div>
+                          <span className="mt-2 inline-flex w-fit rounded-full bg-[#1B365D] px-3 py-1 text-xs font-bold text-white sm:mt-0">
+                            Target Level {lessonPlan.cotAlignment.targetRubricLevel}
+                          </span>
+                        </div>
+                      </summary>
+
+                      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                        {lessonPlan.cotAlignment.evidenceMatrix.map((entry) => {
+                          const rubricIndicator = getCotIndicatorByCode(entry.indicatorCode);
+                          return (
+                            <div key={entry.indicatorCode} className="rounded-lg border border-amber-200 bg-white p-3 shadow-sm">
+                              <div className="text-xs font-bold text-[#1B365D]">
+                                Full Rubric #{entry.rubricIndicator || rubricIndicator?.ordinal} · {entry.indicatorCode}
+                              </div>
+                              <div className="mt-0.5 text-xs text-slate-600">{rubricIndicator?.title}</div>
+
+                              <div className="mt-3 text-[10px] font-bold uppercase tracking-wide text-slate-500">Evidence locations</div>
+                              <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-slate-700">
+                                {(entry.evidenceLocations || []).map((location, index) => <li key={index}>{location}</li>)}
+                              </ul>
+
+                              <div className="mt-3 text-[10px] font-bold uppercase tracking-wide text-slate-500">Observable evidence</div>
+                              <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-slate-700">
+                                {(entry.plannedEvidence || []).map((evidence, index) => <li key={index}>{evidence}</li>)}
+                              </ul>
+
+                              <div className="mt-3 rounded-md bg-sky-50 p-2 text-xs text-sky-900">
+                                <strong>Learner agency:</strong> {entry.learnerAgency}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <p className="mt-4 text-xs italic text-slate-600">
+                        {lessonPlan.cotAlignment.disclaimer}
+                      </p>
+                    </details>
+                  ) : null}
+
                   {/* === INTENTIONS SECTION === */}
                   <div className="bg-[#1B365D] text-white p-3 rounded-t-md font-bold text-sm">
-                    Intentions. <span className="font-normal text-xs text-slate-200">Meaningful learning experiences are anchored in how we frame them. Start by deciding what you want learners to master by the end of the lesson – keep it clear and simple. Remember: Understanding your learners' evolving context and designing around it ensure that your lessons connect with and are relevant to them.</span>
+                    Intentions. <span className="font-normal text-xs text-slate-200">Meaningful learning experiences are anchored in how we frame them. Start by deciding what you want learners to master by the end of the lesson – keep it clear and simple. Remember: Understanding your learners&apos; evolving context and designing around it ensure that your lessons connect with and are relevant to them.</span>
                   </div>
 
                   {/* CURRICULUM STANDARDS */}
@@ -3687,23 +3320,29 @@ export default function Home() {
                     </select>
                   </div>
 
-                  {/* Slide Count - Fixed at 20 */}
+                  {/* Deck length */}
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">
-                      Number of Slides
+                      Deck Length
                     </label>
-                    <div className="text-2xl font-bold text-[#F59E0B]">
-                      20 <span className="text-sm font-normal text-slate-500">(maximum per deck)</span>
-                    </div>
-                    <p className="text-[10px] text-slate-500 mt-1 italic">
-                      Note: Gemini Notebook caps at 20 slides per deck
+                    <select
+                      value={slideCount}
+                      onChange={(event) => setSlideCount(Number.parseInt(event.target.value, 10))}
+                      className="w-full bg-white border border-slate-300 rounded-md p-2.5 text-sm text-slate-900 focus:ring-1 focus:ring-[#F59E0B] focus:outline-none"
+                    >
+                      <option value={12}>Concise · 12 slides</option>
+                      <option value={16}>Standard · 16 slides</option>
+                      <option value={20}>Detailed · 20 slides</option>
+                    </select>
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Each option follows a complete teaching arc; longer decks add examples and guided practice.
                     </p>
                     <p className="text-[10px] text-amber-500 mt-1 italic">
                       ⚠️ Daily quota: ~10 slide deck generations per day (rolling 24h window)
                     </p>
-                    {!canGenerateSlides() && (
+                    {!slideQuotaStatus.canGenerate && (
                       <p className="text-[10px] text-red-500 mt-1 font-bold">
-                        ⏳ Next generation available in {getTimeUntilNextGeneration() || '24h'}
+                        ⏳ Next generation available in {slideQuotaStatus.timeUntilNextGeneration || '24h'}
                       </p>
                     )}
                   </div>
@@ -3771,7 +3410,19 @@ export default function Home() {
 
                 {slideDeck?.slides?.length ? (
                   <div className="mt-4 space-y-3">
-                    <div className="text-sm font-semibold text-slate-700">Slide deck preview</div>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-700">Editable deck preview</div>
+                        <div className="text-[11px] text-slate-500">
+                          {slideDeck.slides.length} slides · native PowerPoint text · Presenter View notes
+                        </div>
+                      </div>
+                      {slideDeck.generation ? (
+                        <div className="text-[10px] text-slate-500">
+                          {slideDeck.generation.generatedVisualCount}/{slideDeck.generation.requestedVisualCount} visuals generated
+                        </div>
+                      ) : null}
+                    </div>
                     {slideDeck.themeColors && (
                       <div className="flex items-center gap-2 text-xs text-slate-500">
                         <span>Theme colors:</span>
@@ -3784,7 +3435,7 @@ export default function Home() {
                       </div>
                     )}
                     <div className="grid gap-3 md:grid-cols-2">
-                      {slideDeck.slides.slice(0, 4).map((slide, index) => (
+                      {slideDeck.slides.slice(0, 6).map((slide, index) => (
                         <div key={`${slide.title}-${index}`} className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
                           <div className="flex items-center justify-between">
                             <div className="text-sm font-semibold text-[#1B365D]">{slide.title}</div>
@@ -3795,44 +3446,41 @@ export default function Home() {
                             )}
                           </div>
                           {slide.subtitle ? <div className="mt-1 text-xs text-slate-500">{slide.subtitle}</div> : null}
+                          {slide.body ? <div className="mt-2 text-xs leading-relaxed text-slate-700">{slide.body}</div> : null}
                           {slide.generatedImageUrl ? (
                             <div className="mt-2">
-                              <img 
-                                src={slide.generatedImageUrl} 
-                                alt={slide.imageQuery || slide.imageDescription || 'Generated image'}
-                                className={`w-full rounded border border-slate-200 ${slide.isFullSlideImage ? 'aspect-video' : 'h-32 object-cover'}`}
-                                onError={(e) => {
-                                  e.target.style.display = 'none';
+                              <img
+                                src={slide.generatedImageUrl}
+                                alt={slide.visualPrompt || 'Generated lesson visual'}
+                                className="aspect-video w-full rounded border border-slate-200 object-cover"
+                                onError={(event) => {
+                                  event.currentTarget.style.display = 'none';
                                 }}
                               />
-                              {slide.isFullSlideImage && (
-                                <div className="text-[10px] text-slate-500 mt-1 italic">Full-slide rendered image (1920x1080)</div>
-                              )}
                             </div>
-                          ) : slide.imageQuery || slide.imageDescription ? (
-                            <div className="mt-2 flex items-start gap-1.5 text-[10px] text-slate-500 bg-slate-50 rounded p-1.5 border border-slate-100">
-                              <ImageIcon className="w-3 h-3 shrink-0 mt-0.5 text-[#F59E0B]" />
+                          ) : slide.visualPrompt ? (
+                            <div className="mt-2 flex items-start gap-1.5 rounded border border-slate-100 bg-slate-50 p-1.5 text-[10px] text-slate-500">
+                              <ImageIcon className="mt-0.5 h-3 w-3 shrink-0 text-[#F59E0B]" />
                               <div>
-                                <span className="font-semibold">Image:</span> {slide.imageQuery}
-                                {slide.imageDescription && <div className="mt-0.5 italic">{slide.imageDescription}</div>}
+                                <span className="font-semibold">Visual direction:</span> {slide.visualPrompt}
                               </div>
                             </div>
                           ) : null}
-                          {!slide.isFullSlideImage && (
+                          {slide.bullets?.length ? (
                             <ul className="mt-2 space-y-1 text-xs text-slate-700">
                               {slide.bullets.slice(0, 3).map((bullet, bulletIndex) => (
-                                <li key={`${slide.title}-${bulletIndex}`} className="flex gap-2">
+                                <li key={slide.title + '-' + bulletIndex} className="flex gap-2">
                                   <span className="text-[#F59E0B]">•</span>
                                   <span>{bullet}</span>
                                 </li>
                               ))}
                             </ul>
-                          )}
+                          ) : null}
                         </div>
                       ))}
                     </div>
-                    {slideDeck.slides.length > 4 ? (
-                      <div className="text-sm text-slate-500">+{slideDeck.slides.length - 4} more slides included in the downloaded deck.</div>
+                    {slideDeck.slides.length > 6 ? (
+                      <div className="text-sm text-slate-500">+{slideDeck.slides.length - 6} more slides included in the downloaded deck.</div>
                     ) : null}
                   </div>
                 ) : null}

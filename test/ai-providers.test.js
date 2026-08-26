@@ -98,8 +98,10 @@ describe('runLessonPlanPipeline', () => {
     };
 
     const result = await runLessonPlanPipeline(pipeline, { isValid, maxRetries: 1 });
-    expect(result).toEqual({ sessions: [{ sessionTitle: 'Test', flow: 'test flow' }] });
-    expect(result.provider).toBe('Gemini (gemini-2.5-flash)');
+    expect(result).toEqual({
+      data: { sessions: [{ sessionTitle: 'Test', flow: 'test flow' }] },
+      provider: 'Gemini (gemini-2.5-flash)',
+    });
   });
 
   it('falls back to secondary models when primary fails', async () => {
@@ -125,7 +127,9 @@ describe('runLessonPlanPipeline', () => {
     };
 
     const result = await runLessonPlanPipeline(pipeline, { isValid, maxRetries: 1 });
-    expect(result).toEqual({ sessions: [{ sessionTitle: 'Test', flow: 'test flow' }] });
-    expect(result.provider).toBe('Gemini (gemini-2.5-pro)');
+    expect(result).toEqual({
+      data: { sessions: [{ sessionTitle: 'Test', flow: 'test flow' }] },
+      provider: 'Gemini (gemini-2.5-pro)',
+    });
   });
 });
