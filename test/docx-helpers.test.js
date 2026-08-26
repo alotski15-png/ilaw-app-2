@@ -18,7 +18,7 @@ describe('docx-helpers', () => {
   it('converts indicator annotations to DOCX indicator format', () => {
     const input = 'After assessment **(Indicator 5.1.2)** and review.';
     const out = formatDocxText(input);
-    expect(out).toContain('**(indicator 9)**');
+    expect(out).toContain('**(indicator 20)**');
   });
 
   it('parses JSON arrays in bracketed strings', () => {

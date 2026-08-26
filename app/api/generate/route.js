@@ -1,5 +1,11 @@
 import { NextResponse } from 'next/server';
 import { buildLessonPlanPipeline, runLessonPlanPipeline } from '@/lib/ai-providers';
+import {
+  buildCotAlignmentTemplate,
+  buildCotRubricGuidance,
+  COT_PRIORITY_INDICATOR_CODES,
+  validateCotAlignment,
+} from '@/lib/cot-rubric';
 
 import { z } from 'zod';
 
@@ -24,6 +30,23 @@ const SessionSchema = z.object({
   reflections: z.any().optional(),
 });
 
+const CotEvidenceSchema = z.object({
+  indicatorCode: z.string().min(5),
+  rubricIndicator: z.number().int().min(1).max(21),
+  targetLevel: z.number().int().min(1).max(9),
+  evidenceLocations: z.array(z.string().min(8)).min(2),
+  plannedEvidence: z.array(z.string().min(12)).min(2),
+  learnerAgency: z.string().min(20),
+});
+
+const CotAlignmentSchema = z.object({
+  careerStage: z.string().min(3),
+  rubricRange: z.array(z.number().int().min(1).max(9)).length(2),
+  targetRubricLevel: z.number().int().min(1).max(9),
+  evidenceMatrix: z.array(CotEvidenceSchema).min(1),
+  disclaimer: z.string().min(20),
+});
+
 const PlanSchema = z.object({
   header: z.object({
     lessonTitle: z.string().optional(),
@@ -40,6 +63,7 @@ const PlanSchema = z.object({
     performanceStandard: z.string().optional(),
   }).optional(),
   sessions: z.array(SessionSchema).min(1).max(10),
+  cotAlignment: CotAlignmentSchema.optional(),
 });
 
 export const runtime = 'nodejs';
@@ -81,6 +105,13 @@ export async function POST(req) {
       if (match) targetSessions = parseInt(match[0], 10);
     }
     targetSessions = Math.min(Math.max(targetSessions, 1), 5);
+
+    const cotEnabled = body.includeCotIndicators === true;
+    const cotRubric = buildCotRubricGuidance({ teacherName: formData.teacherName });
+    const cotAlignmentTemplate = buildCotAlignmentTemplate({ teacherName: formData.teacherName });
+    const cotAnnotationInstruction = (code) => (
+      cotEnabled ? `Add **(Indicator ${code})** immediately after the observable practice.` : ''
+    );
 
     // ============================================================
     // DepEd ILAW DETAILED LESSON PLAN PROMPT
@@ -126,7 +157,7 @@ SESSIONS MATRIX (${targetSessions} columns):
     - Attitudes: [Specific value/disposition objective]
 
   LEARNER CONTEXT:
-    Write a FULL paragraph (3-5 sentences) describing learners' readiness, prior knowledge, learning styles, interests, and specific barriers relevant to this session's topic.
+    Write a FULL paragraph (3-5 sentences) describing learners' readiness, prior knowledge, interests, language and accessibility needs, preferred ways to participate, and specific barriers relevant to this session's topic.
 
   PRE-LESSON:
     Write 2-3 FULL paragraphs describing:
@@ -203,7 +234,7 @@ Integrate the following pedagogical principles THROUGHOUT the entire lesson plan
     - Move beyond simple recall. All questions, activities, and assessments must target HOTS.
     - Focus on Analyzing (e.g., comparing/contrasting, deconstructing), Evaluating (e.g., critiquing, justifying decisions), and Creating (e.g., designing, producing new work).
     - In the 'flow' section, label higher-order questions clearly (e.g., "Teacher asks (Analysis): 'How does this character's motivation compare to...?'").
-    - Add **(Indicator 1.5.2)** after each HOTS question or creative thinking activity.
+    - ${cotAnnotationInstruction('1.5.2')}
 
 2.  **21st-Century Skills:**
     - Explicitly embed the "4Cs" (Critical Thinking, Creativity, Communication, Collaboration) into the activities.
@@ -215,15 +246,15 @@ Integrate the following pedagogical principles THROUGHOUT the entire lesson plan
     - The 'flow' and 'reflections' sections should connect activities and outcomes back to these values where appropriate. For example, a science lesson on ecosystems should connect to 'Makakalikasan'.
 
 4.  **Literacy and Numeracy Integration:**
-    - Include at least one reading/writing/vocabulary activity per session. Add **(Indicator 1.4.2)** after it.
-    - Include at least one numerical/data/mathematical reasoning activity per session. Add **(Indicator 1.4.2)** after it.
+    - Include at least one reading/writing/vocabulary activity per session. ${cotAnnotationInstruction('1.4.2')}
+    - Include at least one numerical/data/mathematical reasoning activity per session. ${cotAnnotationInstruction('1.4.2')}
 
 5.  **Differentiated Instruction:**
-    - Include at least one differentiated activity per session (visual, auditory, kinesthetic options OR tiered tasks by readiness level). Add **(Indicator 3.1.2)** after it.
+    - Include at least one differentiated activity per session based on readiness evidence, accessibility needs, interests, or meaningful choices in representation, participation, and expression. Do not assign learners fixed "learning style" labels. ${cotAnnotationInstruction('3.1.2')}
 
 6.  **Classroom Management:**
-    - Include positive discipline strategies and behavior management in preLesson and flow. Add **(Indicator 2.6.2)** after it.
-    - Describe classroom structure and group arrangements for hands-on activities. Add **(Indicator 2.3.2)** after it.
+    - Include positive, non-violent discipline strategies and learner self-regulation in preLesson and flow. ${cotAnnotationInstruction('2.6.2')}
+    - Describe classroom structure and group arrangements for hands-on activities. ${cotAnnotationInstruction('2.3.2')}
 
 ████████████████████████████████████████████████████████████
 PEDAGOGICAL PROGRESSION ACROSS SESSIONS
@@ -251,7 +282,9 @@ STRICT OUTPUT RULES
 3. EVERY field in EVERY session must contain substantive, specific content. No placeholders, no "TBD", no empty strings, no "..." ellipsis marks.
 4. The "flow" field must be the MOST DETAILED field - it is the instructional script that teachers will follow step-by-step.
 5. The "formativeAssessment" field must be a JSON object with method, evidence, sampleItems, and evidenceOfSuccess.
-6. All content MUST include COT indicator annotations in BOLD using the format **(Indicator X.X.X)** as specified in the COT INDICATOR ALIGNMENT section above. These are REQUIRED and must appear throughout the lesson plan content.
+${cotEnabled
+  ? '6. COT annotations must use **(Indicator X.X.X)** and sit immediately after the observable practice they label. Annotations without concrete evidence do not count.'
+  : '6. Do not add COT annotations because rubric alignment was not requested.'}
 7. Match the language specified: ${formData.language || 'English (Default)'}.
 
 ████████████████████████████████████████████████████████████
@@ -278,7 +311,7 @@ REQUIRED JSON STRUCTURE
       "sessionNumber": ${i + 1},
       "sessionTitle": "[Descriptive title for Session ${i + 1} based on the learning progression]",
       "learningObjectives": "Knowledge: [Specific knowledge objective with content vocabulary]\\nSkills: [Specific skill objective describing observable student actions]\\nAttitudes: [Specific value objective naming the disposition to develop]",
-      "learnerContext": "[Full paragraph: 3-5 sentences describing students' readiness, prior knowledge from previous sessions, learning styles, interests, and specific barriers relevant to this session. Be specific, not generic.]",
+      "learnerContext": "[Full paragraph: 3-5 sentences describing students' readiness, prior knowledge from previous sessions, interests, language and accessibility needs, preferred ways to participate, and specific barriers relevant to this session. Be specific, not generic.]",
       "preLesson": "[2-3 paragraphs: Warm-up routine with (1) specific drill/review activity including actual questions, (2) motivation activity with materials and teacher script, (3) clear statement of session objectives.]",
       "flow": "### 1. Activity / Exploration\\n**Teacher Says:** [3-5 sentence script with guiding questions, instructions, and timing]\\n**Learners Do:** [2-4 sentences on expected student responses and actions]\\n\\n### 2. Analysis / Direct Instruction\\n**Teacher Says/Does:** [5-8 sentences: board work with actual examples, modeling with think-aloud, higher-order questions with expected answers]\\n**Learners Do:** [2-4 sentences on note-taking, answering questions, participation]\\n\\n### 3. Guided Practice / Collaboration\\n**Teacher Says/Does:** [4-6 sentences: group/partner instructions, task description, time allocations, success criteria]\\n**Learners Do:** [2-4 sentences on collaboration, output produced, presentations]\\n\\n### 4. Independent Practice / Application\\n**Teacher Says/Does:** [3-5 sentences: individual task with real-world connection, directions, expected output]\\n**Learners Do:** [2-4 sentences on independent work, sample answers, self-check]",
       "learningResources": "[List 4-6 specific materials: e.g., 'Slide deck with 15 graphs, printed worksheets (10 items), graphing calculators, whiteboard markers, rulers']",
@@ -296,63 +329,24 @@ REQUIRED JSON STRUCTURE
 }
 `;
 
-    // Conditionally include COT indicator instructions based on user preference
-    const cotInstruction = body.includeCotIndicators === true ? `
+    const cotInstruction = cotEnabled ? `
 ████████████████████████████████████████████████████████████
-COT INDICATOR ALIGNMENT (MANDATORY — HIGH YIELD RATING)
+COT FULL-RUBRIC EVIDENCE ALIGNMENT (ANNEX E-1, LEVELS 1-9)
 ████████████████████████████████████████████████████████████
 
-The generated lesson plan MUST explicitly address ALL 9 COT indicators below to achieve a HIGH RATING (6 out of 6). After each relevant section of the lesson plan, insert the indicator annotation in BOLD using this exact format: **(Indicator X.X.X)**
+${cotRubric.guidance}
 
-The 9 COT Indicators (SY 2026-2027) are:
+TRACEABILITY RULES
+- Address all nine priority codes: ${COT_PRIORITY_INDICATOR_CODES.join(', ')}.
+- Place **(Indicator X.X.X)** immediately after the exact sentence or activity that provides evidence.
+- Place 1.1.2 in content explanation or transfer; 1.4.2 in literacy/numeracy strategy use; 1.5.2 in higher-order questioning and creation; 2.3.2 in structure, roles, and exploration; 2.6.2 in positive discipline and self-regulation; 3.1.2 in evidence-based differentiation; 4.1.2 in sequencing and adaptive pathways; 4.5.2 in purposeful resources and ICT; and 5.1.2 in aligned assessment and feedback-driven adjustment.
+- Never attach several indicator labels to a generic paragraph. Each label must have its own observable evidence.
 
-1. **(Indicator 1.1.2)** — Apply knowledge of content within and across curriculum teaching areas
-   - Show cross-curricular connections in learningObjectives and opportunitiesForIntegration
-   - Demonstrate deep subject content knowledge in the flow section
+REQUIRED COT ALIGNMENT OUTPUT
+Add a top-level "cotAlignment" object after "sessions". Use this exact shape and replace every placeholder with lesson-specific evidence:
+${JSON.stringify(cotAlignmentTemplate, null, 2)}
 
-2. **(Indicator 1.4.2)** — Use a range of teaching strategies that enhance learner achievement in literacy and numeracy skills
-   - Include reading, writing, vocabulary building activities
-   - Include numerical reasoning, data analysis, or mathematical connections
-
-3. **(Indicator 1.5.2)** — Apply a range of teaching strategies to develop critical and creative thinking, as well as other higher-order thinking skills
-   - Include HOTS questions (Analysis, Evaluation, Creation)
-   - Include creative thinking tasks (designing, producing, generating)
-
-4. **(Indicator 2.3.2)** — Manage classroom structure to engage learners in meaningful exploration, discovery and hands-on activities
-   - Describe group arrangements, physical setup, hands-on manipulatives
-   - Include discovery-based learning activities
-
-5. **(Indicator 2.6.2)** — Manage learner behavior constructively by applying positive and non-violent discipline
-   - Include classroom norms, positive reinforcement, behavior management strategies
-   - Describe how the teacher maintains a learning-focused environment
-
-6. **(Indicator 3.1.2)** — Use differentiated, developmentally appropriate learning experiences to address learners' gender, needs, strengths, interests and experiences
-   - Include differentiated activities for different readiness levels
-   - Address varied learning styles (visual, auditory, kinesthetic)
-   - Include gender-responsive and inclusive strategies
-
-7. **(Indicator 4.1.2)** — Plan, manage and implement developmentally sequenced teaching and learning process
-   - Show clear lesson sequencing (Pre-Lesson → Flow phases → Assessment)
-   - Include time allocations and smooth transitions
-
-8. **(Indicator 4.5.2)** — Select, develop, organize and use appropriate teaching and learning resources, including ICT
-   - List specific, concrete learning resources including technology
-   - Include alternative/fallback resources
-
-9. **(Indicator 5.1.2)** — Design, select, organize and use diagnostic, formative and summative assessment strategies
-   - Include diagnostic checks in preLesson
-   - Include formative assessment with specific items and rubrics
-   - Include evidence of success criteria
-
-WHERE TO PLACE INDICATOR ANNOTATIONS:
-- In "learningObjectives": Add **(Indicator 1.1.2)** after cross-curricular knowledge objectives
-- In "preLesson": Add **(Indicator 2.6.2)** after behavior management/routines, **(Indicator 5.1.2)** after diagnostic checks
-- In "flow": Add **(Indicator 1.4.2)** after literacy/numeracy strategies, **(Indicator 1.5.2)** after HOTS questions, **(Indicator 2.3.2)** after hands-on/group activities, **(Indicator 3.1.2)** after differentiated instruction, **(Indicator 4.1.2)** after sequencing/time allocation
-- In "learningResources": Add **(Indicator 4.5.2)** after listing resources
-- In "formativeAssessment": Add **(Indicator 5.1.2)** after assessment description
-- In "opportunitiesForIntegration": Add **(Indicator 1.1.2)** after cross-curricular connections
-
-CRITICAL: Each indicator must appear at least once across the sessions. The annotations must be in BOLD text using double asterisks: **(Indicator X.X.X)**
+Every evidenceMatrix entry must name at least two precise session/field locations, at least two observable teacher-learner practices or products, and a substantive learner-agency action. This report is an evidence map, not a predicted score.
 ` : '';
 
     const prompt = `${systemInstruction}${cotInstruction}\nUser Input Data: ${JSON.stringify(formData)}`;
@@ -366,30 +360,16 @@ CRITICAL: Each indicator must appear at least once across the sessions. The anno
       signal,
     });
 
-    // All 9 COT indicators that must appear at least once in the lesson plan
-    const REQUIRED_COT_INDICATORS = [
-      '(Indicator 1.1.2)',
-      '(Indicator 1.4.2)',
-      '(Indicator 1.5.2)',
-      '(Indicator 2.3.2)',
-      '(Indicator 2.6.2)',
-      '(Indicator 3.1.2)',
-      '(Indicator 4.1.2)',
-      '(Indicator 4.5.2)',
-      '(Indicator 5.1.2)',
-    ];
-
-    // Validation: check session count AND that all 9 COT indicators are present (only if enabled)
+    // Validate both the lesson structure and the rubric evidence map before
+    // accepting a model response. Annotation-only output is deliberately rejected.
     const isValid = (parsed) => {
       if (!parsed || !Array.isArray(parsed.sessions) || parsed.sessions.length !== targetSessions) {
         return false;
       }
-      // Only validate COT indicators if the user explicitly enabled them
-      if (body.includeCotIndicators === true) {
-        const fullText = JSON.stringify(parsed);
-        const missing = REQUIRED_COT_INDICATORS.filter(ind => !fullText.includes(ind));
-        if (missing.length > 0) {
-          console.warn(`[Validation] Missing COT indicators: ${missing.join(', ')}`);
+      if (cotEnabled) {
+        const audit = validateCotAlignment(parsed, { teacherName: formData.teacherName });
+        if (!audit.valid) {
+          console.warn(`[Validation] COT evidence issues: ${audit.issues.join(' | ')}`);
           return false;
         }
       }
@@ -419,13 +399,13 @@ CRITICAL: Each indicator must appear at least once across the sessions. The anno
       // 1) direct JSON parse
       try {
         planCandidate = JSON.parse(planCandidate);
-      } catch (e) {
+      } catch {
         // 2) extract first JSON object/array block from string
         const match = planCandidate.match(/([\[{][\s\S]*[\]}])/);
         if (match) {
           try {
             planCandidate = JSON.parse(match[1]);
-          } catch (e2) {
+          } catch {
             // leave as string for validation to fail
           }
         }
